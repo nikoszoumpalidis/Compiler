@@ -1,0 +1,36 @@
+program test{
+	int i,j,k,smth;
+\
+	int testfunction(in i, inout j){
+		int a;
+
+		if(i=1)
+			a:=0;
+		[else{
+			a:32767;
+		}]	*\
+
+		return(a);
+	}
+
+\* test procedure *
+ * 					*\
+	void testprocedure(in k, inout smth){
+		int a, b;
+
+		a:=10;
+		while(a<>20){
+			k:=a+2;
+			a+=1;
+		}
+		for(b:=0;b<=10;b+=1){
+			smth:=smth*b;
+		}
+	}
+~
+	input (i);							\* unput from keyboard *\
+	j:=testfunction(i,j);
+	call testprocedure(k,smth);
+
+	print(j); 
+}\* *

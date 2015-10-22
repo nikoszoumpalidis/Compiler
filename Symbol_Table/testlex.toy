@@ -1,0 +1,41 @@
+program test{
+	declareint i,j,k,smth;
+
+	int testfunction(in i, inout j){
+		declareint a;
+		void nested(){
+			declareint d;
+
+			d:=2;
+		}
+
+		if(not[a=3 or [i>=1 and i<>2]])
+			a:=0
+		else{
+			a:=2;
+		};
+
+		return(a);
+	}
+
+/* test procedure *
+ * 					*/
+	void testprocedure(in k, inout smth){
+		declareint a, b;
+
+		a:=10;
+		while(a<>20){
+			k:=a*2;
+			a:=1;
+		};
+		for(b:=0;b<=10;b+=1){
+			smth:=smth*b;
+		}
+	}
+
+	input (i);						/* unput from keyboard */
+	j:=testfunction(in i,inout j);
+	call testprocedure(in k,inout smth);
+
+	print(j);
+}

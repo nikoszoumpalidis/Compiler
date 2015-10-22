@@ -1,0 +1,31 @@
+program test{
+	declareint i,j,k,smth;
+
+	/*k:=-5+1*8+(12/6+4*(-2/(-2)))-10;*/
+
+	/*if(a>1 or a<2)
+		k:=2
+	else 
+		b:=1;*/
+
+	/*while(not[x=2]){
+		k:=a*2;
+		a:=1;
+	};*/
+
+	/*for(b:=-5;b<=10;b+=-1){
+		smth:=smth*b;
+	}*/
+
+	/*input (i);	*/						/* unput from keyboard */
+
+	/*print(-a+1*bs(in x, inout y)+(12/r+pi*(-2/(-t)))-10);
+
+	return(-a+1*bs(in x, inout y)+(12/r+pi*(-2/(-t)))-10);
+
+	call testprocedure(in k,inout smth);*/
+
+	/*print(max(in a, in b, inout c));*/
+
+	print(max(in (max(in a, in b)), in (max(in c, in d))));
+}

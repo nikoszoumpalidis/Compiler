@@ -1,0 +1,20 @@
+program calculatepower{
+	declareint a,b,z;
+	
+	int power(in x, in y){
+		declareint p,i;
+
+		p:=1;		
+
+		for(i:=0;i<y;i+=1)
+			p:=x*p;
+
+		print(p);
+		return(p);
+	}
+
+	input (a);
+	input (b);
+	z:=power(in a, in b);
+
+}

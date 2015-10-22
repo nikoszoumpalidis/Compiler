@@ -1,0 +1,33 @@
+program P{
+	declareint x,y,p,mul,a,b;
+
+	int mulfunc(in x ,in y){
+		declareint mul,i;
+		mul:=0;
+		i:=0;
+		/*print(y);*/
+		while(i<y){
+			mul:=mul+x;
+			i:=i+1;
+			/*print(mul);*/
+		};
+		return(mul);
+	}
+	p:=1;
+	mul:=1;
+	/*input (x);*/
+	x:=2;
+	/*input (y);*/
+	y:=2;
+	a:=10;
+	b:=20;
+	if(p>20 and p<256)
+		mul:=mulfunc(in p,in a)
+	else{
+		mul:=mulfunc(in p,in b);
+	};
+	print(mul);
+}
+	
+		
+	

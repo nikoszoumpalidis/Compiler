@@ -1,0 +1,38 @@
+program P{
+	declareint x,y,p,mul,a,b;
+	void power(in x,in y,inout p){
+		declareint i;
+		for(i:=0;i<y;i+=1){
+			p:=x*p;
+		}
+	}
+	int mulfunc(in x ,in y){
+		declareint mul,i;
+		mul:=0;
+		i:=0;
+		while(i<y){
+			mul:=mul+x;
+			i:=i+1;
+		};
+		return(mul);
+	}
+	p:=1;
+	mul:=1;
+	/*input (x);*/
+	x:=2;
+	/*input (y);*/
+	y:=5;
+	call power(in x,in y,inout p);
+	print(p);
+	a:=10;
+	b:=20;
+	if(p>20 and p<256)
+		mul:=mulfunc(in p,in a)
+	else{
+		mul:=mulfunc(in p,in b);
+	};
+	print(mul);
+}
+	
+		
+	

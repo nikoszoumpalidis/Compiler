@@ -1,0 +1,2657 @@
+/* *******************************************************************
+
+* Program: Lectical and Syntactical analysis,
+			  intermediate code and symbol table generation of Language:"Toy"										   
+
+* Author:	Sofia Avgoustidou					1456                               
+				Fedon Bouzbas						1527
+
+* Usage: executable input.toy
+		input.toy=File written in Toy language                                     
+
+*             										                           
+
+* File: symbol_table_2012.c                                                  
+
+******************************************************************** */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+struct nexttoken{		
+	int type;			// type of token read 
+	char strval[82];	// stores only id or num
+};
+
+FILE *fp;				// file of a program in toy language
+
+int T[11][20];				//transition table
+struct nexttoken token;
+
+typedef struct linkedquad{
+	char label[40];
+	char op[40];
+	char op1[40];
+	char op2[40];
+	char op3[40];
+struct linkedquad *next;
+}quad;
+
+typedef struct listofquads{
+	quad *link;
+	struct listofquads *next;
+}quadlist;
+
+typedef struct truefalselist{
+	quadlist *truelist;
+	quadlist *falselist;
+}tflist;
+
+/* struct for storing all actual parameters in a list *
+ *	before generating the quads								*
+ *	necessary for occasions like:								*
+ *	max(in (max(in a, in b)), in (max(in c, in d)))		*/
+typedef struct actualparlist{
+	char name[40];
+	char method[5];
+	struct actualparlist *next;
+}parlist;
+
+/*====================================================*/
+/* structs for Symbol Table									*/
+typedef struct new_scope{
+	char scope_name[31];
+	int nestingLevel;
+
+	struct new_entity *first_ent;
+	struct new_scope *next_scope;
+}scope;
+
+typedef struct new_entity{
+	char ent_name[40];
+	int type;
+	//char type[5];
+	union{
+		struct new_variable *avar;
+		struct new_function *afunc;
+		struct new_tempvar *atempvar;
+		struct new_parameter *apar;
+	}ent_type;
+	struct new_entity *next_ent;
+}entity;
+
+typedef struct new_variable{
+	int offset;
+}variable;
+
+typedef struct new_function{
+	int type;
+	char starting_quad[7];
+	int framelength;	
+	struct new_argument *first_arg;
+}function;
+
+typedef struct new_tempvar{
+	int offset;
+}tempvar;
+
+typedef struct new_parameter{
+	int offset;
+	int method;				// CV or REF
+}parameter;
+
+typedef struct new_argument{
+	char arg_name[40];
+	int method;				// CV or REF
+	struct new_argument *next_arg;
+}argument;
+
+typedef struct varq{
+	char var_name[40];
+	struct varq *next;
+} var_list;
+
+typedef struct parq{
+	char par_name[40];
+	int par_method;		// CV or REF
+	struct parq *next;
+} par_list;
+/*====================================================*/
+
+static int line=1;		//global variable - stores line of character in toy file
+
+quad *aquad=NULL;
+quad *lastquad=NULL;
+char NextQuad[7]="99";
+int temp_cnt=0;
+char temp_var[5];
+
+scope *ascope=NULL;		// global variable - starting scope for main
+var_list *hlp_var_list=NULL;	// global variable - helps for placing variables to entities
+par_list *hlp_par_list=NULL;	// global variable - helps for placing parameters to entities
+par_list *hlp_arg_list=NULL;	// global variable - helps for finding parameter mode of arguments and placing them to arguments
+
+int Level=0;				// global variable - shows the nesting level of scope
+int entoff=12;
+int argoff=12;
+
+/* functions used in lectical analysis		 									*/
+void create_transition_table();
+void checkbuflength(int, char [], int, int );
+int check_reserved(char []);
+static void lex();
+/*===================================================================*/
+/* functions used in syntactical analysis 									*/
+void syntax();
+void program();
+void block(char *, quadlist *);
+void declarations();
+void varlist();
+void subprograms();
+void procorfunc();
+void funcbody(char *);
+void formalpars();
+void formalparlist();
+void formalparitem();
+void sequence();
+void brackets_seq();
+void brack_or_stat();
+void statement();
+void assignment_stat();
+void if_stat();
+void elsepart();
+void while_stat();
+void for_stat();
+void input_stat();
+void print_stat();
+void call_stat();
+void actualpars(char *, char *);
+void actualparlist();
+parlist * actualparitem(parlist *);
+void return_stat();
+void condition(tflist *);
+void boolterm(tflist *);
+void boolfactor(tflist *);
+void expression(char *);
+void term(char *);
+void factor(char *);
+void relational_oper(char *);
+void add_oper();
+void mul_oper();
+void optional_sign(char *);
+/*===================================================================*/
+/* functions used in intermediate code		 									*/
+void nextquad();
+void genquad(char *, char *, char *, char *);
+void newTemp();
+quadlist * emptylist();
+quadlist * makelist(char *);
+quadlist * merge(quadlist *, quadlist *);
+void backpatch(quadlist *, char *);
+/*===================================================================*/
+/* functions used in symbol table			 									*/
+scope * add_new_scope(scope *, char *);
+scope * add_new_entity(scope *, char *, int );
+scope * add_new_argument(scope *, char *, int );
+variable * add_new_variable();
+function * add_new_function(int );
+tempvar * add_new_tempvar();
+parameter * add_new_parameter(int );
+scope * add_help_var_list_to_scope(scope *, var_list *);
+scope * add_help_par_list_to_scope(scope *, par_list *);
+scope * add_help_arg_list_to_scope(scope *, par_list *);
+var_list * add_var_to_list(var_list *, char *);
+par_list * add_par_to_list(par_list *, char *, int );
+entity * assign_starting_quad(entity *, char *);
+entity * assign_framelength(scope *, entity *);
+entity * searchentity(scope *, char *);
+scope * delete_last_scope(scope *);
+void print_symbol_table(scope *);
+/*===================================================================*/
+
+/* possible tokens found in greeklish file and states						*/
+enum tokens_and_states{
+	lettertk,								// A...Z , a...z				0
+	digittk,									// 0...9							1
+	plustk,									//	+								2
+	minustk,									// -								3
+	multtk,									// *								4
+	slashtk,									// / 								5
+	colontk,									// :								6
+	equaltk,									// =								7
+	lowertk,									//	<								8
+	greatertk,								// >								9	
+	semicolontk,							// ;								10
+	commatk,									// ,								11
+	leftbrackettk,							// (								12
+	rightbrackettk,						// )								13
+	leftsquarebrackettk,					// [								14
+	rightsquarebrackettk,				// ]								15
+	leftcurlybrackettk,					// {								16
+	rightcurlybrackettk,					// }								17
+	eoftk,									//	eof							18
+	othertk,									// other							19
+
+	increasetk,								//	+=								20
+	lowerequaltk,							// <=								21
+	greaterequaltk,						// >=								22
+	nonequaltk,								// <>								23
+	assigntk,								// :=								24
+	begincommenttk,						// /*								25
+	endcommenttk,							// */								26
+
+	programtk,								// program     				27
+	inttk,									// int							28
+	voidtk,									// void							29
+	intk,										// in								30
+	inouttk,									// inout							31
+	calltk,									// call							32
+	returntk,								// return						33	
+	inputtk,									// input							34
+	printtk,									// print							35
+	iftk,										// if								36
+	elsetk,									// else							37
+	whiletk,									// while							38
+	fortk,									// for							39
+	nottk,									// not							40	
+	andtk,									// and							41
+	ortk,										// or								42
+
+	numtk,									//									43
+	idtk,										// 								44
+	declareinttk,							//	declareint					45
+
+
+	state0=0,									// read new symbol
+	state1=1,									// a letter has been read
+	state2=2,									//	a digit has been read
+	state3=3,									// a + has been read
+	state4=4,									//	a * has been read
+	state5=5,									//	a : has been read
+	state6=6,									//	a < has been read
+	state7=7,									// a > has been read
+	state8=8,									// a \ has been read
+	state9=9,									// a \ and a * has been read
+	state10=10,									// in \* state , a * has been read
+
+	OK=-1,
+	error=-2
+};
+
+enum type_of_entity_method_and_proc_or_func{
+	enumvar,									//	variable						0
+	enumfunc,								//	function						1
+	enumtempvar,							//	tempvar						2
+	enumpar,									//	parameter					3
+	
+	enumCV,									// CV								4
+	enumREF,									//	REF							5
+
+	enumprocedure,							// procedure					6
+	enumfunction,							//	function						7
+
+	enumin,									// in								8
+	enuminout								//	inout							9
+};
+
+/*==========================================================*/
+/* Lexical analysis 														*/
+void create_transition_table(){
+	int i;
+
+	T[state0][lettertk]=state1;
+	T[state0][digittk]=state2;
+	T[state0][plustk]=state3;
+	T[state0][minustk]=OK;
+	T[state0][multtk]=state4;
+	T[state0][slashtk]=state8;
+	T[state0][colontk]=state5;
+	T[state0][equaltk]=OK;
+	T[state0][lowertk]=state6;
+	T[state0][greatertk]=state7;
+	for(i=10;i<=17;i++)
+		T[state0][i]=OK;
+	T[state0][eoftk]=OK;
+	T[state0][othertk]=error;
+
+	for(i=0;i<=1;i++)
+		T[state1][i]=state1;
+	for(i=2;i<=19;i++)
+		T[state1][i]=OK;
+
+	T[state2][lettertk]=OK;
+	T[state2][digittk]=state2;
+	for(i=2;i<=19;i++)
+		T[state2][i]=OK;
+
+	for(i=0;i<=19;i++)
+		T[state3][i]=OK;
+
+	for(i=0;i<=4;i++)
+		T[state4][i]=OK;
+	T[state4][slashtk]=error;
+	for(i=6;i<=19;i++)
+		T[state4][i]=OK;
+
+	for(i=0;i<=6;i++)
+		T[state5][i]=error;
+	T[state5][equaltk]=OK;
+	for(i=8;i<=19;i++)
+		T[state5][i]=error;
+	
+	for(i=0;i<=19;i++)
+		T[state6][i]=OK;
+
+	for(i=0;i<=19;i++)
+		T[state7][i]=OK;
+
+	for(i=0;i<=3;i++)
+		T[state8][i]=OK;
+	T[state8][multtk]=state9;
+	for(i=5;i<=19;i++)
+		T[state8][i]=OK;
+	
+	for(i=0;i<=3;i++)
+		T[state9][i]=state9;
+	T[state9][multtk]=state10;
+	for(i=5;i<=17;i++)
+		T[state9][i]=state9;
+	T[state9][eoftk]=error;
+	T[state9][othertk]=state9;
+	
+	for(i=0;i<=4;i++)
+		T[state10][i]=state9;
+	T[state10][slashtk]=state0;
+	for(i=6;i<=17;i++)
+		T[state10][i]=state9;
+	T[state10][eoftk]=error;
+	T[state10][othertk]=state9;
+	
+}
+
+void checkbuflength(int state, char buf[], int pos, int line){
+	
+	if(state==state1){
+		buf[pos]='\0';
+		if(strlen(buf)>30){
+			printf("Line %d :: Warning: \"%s\" is too long (max length = 30 characters)\n", line, buf);
+			buf[30]='\0';		
+		}
+		else{
+			return;
+		}
+	}
+	else if(state==state2){
+		buf[pos]='\0';
+		if(atoi(buf)<-32767 || atoi(buf)>32767){
+			printf("Line %d :: Error: \"%s\" is out of limits (number must be between -32767 and 32767)\n", line, buf);
+			exit(0);
+		}
+		else{
+			return;
+		}
+	}
+}
+
+int check_reserved(char token[]){
+		
+	if(strcmp(token,"program")==0)
+		return(programtk);
+	else if(strcmp(token,"int")==0)
+		return(inttk);
+	else if(strcmp(token,"void")==0)
+		return(voidtk);
+	else if(strcmp(token,"in")==0)
+		return(intk);
+	else if(strcmp(token,"inout")==0)
+		return(inouttk);
+	else if(strcmp(token,"call")==0)
+		return(calltk);
+	else if(strcmp(token,"return")==0)
+		return(returntk);
+	else if(strcmp(token,"input")==0)
+		return(inputtk);
+	else if(strcmp(token,"print")==0)
+		return(printtk);
+	else if(strcmp(token,"if")==0)
+		return(iftk);
+	else if(strcmp(token,"else")==0)
+		return(elsetk);
+	else if(strcmp(token,"while")==0)
+		return(whiletk);
+	else if(strcmp(token,"for")==0)
+		return(fortk);
+ 	else if(strcmp(token,"not")==0)
+		return(nottk);
+	else if(strcmp(token,"and")==0)
+		return(andtk);
+	else if(strcmp(token,"or")==0)
+		return(ortk);
+	else if(strcmp(token,"declareint")==0)
+		return(declareinttk);
+	else
+		return(idtk);
+}
+
+static void lex(){
+	char ch;															// character read from file
+	char buf[81];
+	int pos=0;														// current position of buffer
+	int state;														// current state
+
+	state=state0;													// lex always starts from state0
+	while(state>=0){
+		ch=getc(fp);												// get next character in file
+		if(state==0)
+			while(ch==' '){										// ignore spaces
+				ch=getc(fp);
+		}
+		if(state==state0 || state==state9 || state==state10){
+			while(ch=='\n' || ch=='\t'){						// ignore whitespaces only in certain states
+				if(ch=='\n'){
+					line++;											// change line when a break line occurs
+				}
+				ch=getc(fp);
+				while(state==state0 && ch==' '){				// case break line and then whitespace occurs
+					ch=getc(fp);
+				}
+			}
+		}
+
+		switch(ch){
+			case 'A': case 'B': case 'C': case 'D':
+			case 'E': case 'F': case 'G': case 'H':
+			case 'I': case 'J': case 'K': case 'L':
+			case 'M': case 'N': case 'O': case 'P':
+			case 'Q': case 'R': case 'S': case 'T':
+			case 'U': case 'V': case 'W': case 'X':
+			case 'Y': case 'Z': case 'a': case 'b':
+			case 'c': case 'd': case 'e': case 'f':
+			case 'g': case 'h': case 'i': case 'j':
+			case 'k': case 'l': case 'm': case 'n':
+			case 'o': case 'p': case 'q': case 'r':
+			case 's': case 't': case 'u': case 'v':
+			case 'w': case 'x': case 'y': case 'z':
+				if(state==state0 || state==state1){				
+					buf[pos++]=ch;						
+				}
+				else if(state==state2){
+					ungetc(ch,fp);										// unget a character back to file
+					token.type=numtk;
+					buf[pos]='\0';
+					checkbuflength(state,buf,pos,line);
+					strcpy(token.strval,buf);
+				}
+				else if(state==state3){
+					ungetc(ch,fp);
+					token.type=plustk;
+				}
+				else if(state==state4){
+					ungetc(ch,fp);
+					token.type=multtk;
+				}
+				else if(state==state6){
+					ungetc(ch,fp);
+					token.type=lowertk;
+				}
+				else if(state==state7){
+					ungetc(ch,fp);
+					token.type=greatertk;
+				}
+	
+				else if(state==state5){
+					ungetc(ch,fp);
+					printf("Line %d :: Error: Unknown character \":\"\n", line);
+					exit(0);
+				}
+				else if(state==state8){
+					ungetc(ch,fp);
+					token.type=slashtk;
+				}	
+
+				state=T[state][lettertk];
+			break;
+			case '0': case '1': case '2': case '3':
+			case '4': case '5': case '6': case '7':
+			case '8': case '9':
+				if(state==state0 || state==state1 || state==state2){
+					buf[pos++]=ch;
+				}
+				else if(state==state3){
+					ungetc(ch,fp);
+					token.type=plustk;
+				}
+				else if(state==state4){
+					ungetc(ch,fp);
+					token.type=multtk;
+				}
+				else if(state==state6){
+					ungetc(ch,fp);
+					token.type=lowertk;
+				}
+				else if(state==state7){
+					ungetc(ch,fp);
+					token.type=greatertk;
+				}
+
+				else if(state==state5){
+					ungetc(ch,fp);
+					printf("Line %d :: Error: Unknown character \":\"\n", line);
+					exit(0);
+				}
+				else if(state==state8){
+					ungetc(ch,fp);
+					token.type=slashtk;
+				}
+
+				state=T[state][digittk];
+			break;
+			case '+': case '-': case '*': case '/':
+			case '=': case ':': case '<': case '>':
+			case ';': case ',': case '(': case ')':
+			case '[': case ']': case '{': case '}':
+				if(state==state0){
+					if(ch=='-')
+						token.type=minustk;
+					else if(ch=='=')
+						token.type=equaltk;
+					else if(ch==';')
+						token.type=semicolontk;
+					else if(ch==',')
+						token.type=commatk;
+					else if(ch=='(')
+						token.type=leftbrackettk;
+					else if(ch==')')
+						token.type=rightbrackettk;
+					else if(ch=='[')
+						token.type=leftsquarebrackettk;
+					else if(ch==']')
+						token.type=rightsquarebrackettk;
+					else if(ch=='{')
+						token.type=leftcurlybrackettk;
+					else if(ch=='}')
+						token.type=rightcurlybrackettk;
+				}
+				else if(state==state1){
+					ungetc(ch,fp);
+					buf[pos]='\0';
+					checkbuflength(state,buf,pos,line);
+					token.type=check_reserved(buf);
+					if(token.type==idtk){
+						strcpy(token.strval,buf);
+					}
+					return;
+				}
+				else if(state==state2){
+					ungetc(ch,fp);
+					token.type=numtk;
+					buf[pos]='\0';
+					checkbuflength(state,buf,pos,line);
+					strcpy(token.strval,buf);
+					return;
+				}
+				else if(state==state3){
+					if(ch=='=')
+						token.type=increasetk;
+					else{
+						ungetc(ch,fp);
+						token.type=plustk;
+						return;
+					}	
+				}
+				else if(state==state4){
+					if(ch!='/'){
+						ungetc(ch,fp);			
+						token.type=multtk;						
+					}
+					else{
+						printf("Line %d :: Error: Unexpected \"*/\" token\n", line);
+						exit(0);
+						return;
+					}	
+				}
+				else if(state==state5){
+					if(ch=='=')
+						token.type=assigntk;
+					else{
+						ungetc(ch,fp);
+						printf("Line %d :: Error: Unknown character \":\"\n", line);
+						exit(0);
+						return;
+					}
+				}
+				else if(state==state6){
+					if(ch=='=')
+						token.type=lowerequaltk;
+					else if(ch=='>')
+						token.type=nonequaltk;
+					else{					
+						ungetc(ch,fp);
+						token.type=lowertk;
+						return;
+					}
+				}
+				else if(state==state7){
+					if(ch=='=')
+						token.type=greaterequaltk;
+					else{
+						ungetc(ch,fp);
+						token.type=greatertk;
+						return;
+					}				
+				}
+				else if(state==state8){
+					if(ch!='*'){
+						ungetc(ch,fp);
+						token.type=slashtk;
+						return;
+					}
+				}						
+				
+				if(ch=='+')
+					state=T[state][plustk];
+				else if(ch=='-')
+					state=T[state][minustk];
+				else if(ch=='*')
+					state=T[state][multtk];
+				else if(ch=='/')
+					state=T[state][slashtk];
+				else if(ch=='=')
+					state=T[state][equaltk];
+				else if(ch==':')
+					state=T[state][colontk];
+				else if(ch=='<')
+					state=T[state][lowertk];
+				else if(ch=='>')
+					state=T[state][greatertk];
+				else if(ch==';')
+					state=T[state][semicolontk];
+				else if(ch==',')
+					state=T[state][commatk];
+				else if(ch=='(')
+					state=T[state][leftbrackettk];
+				else if(ch==')')
+					state=T[state][rightbrackettk];
+				else if(ch=='[')
+					state=T[state][leftsquarebrackettk];
+				else if(ch==']')
+					state=T[state][rightsquarebrackettk];
+				else if(ch=='{')
+					state=T[state][leftcurlybrackettk];
+				else if(ch=='}')
+					state=T[state][rightcurlybrackettk];
+				else
+					state=state0;
+			break;
+			case EOF:
+				if(state==state0)
+					token.type=eoftk;
+				else if(state==state1){
+					ungetc(ch,fp);
+					buf[pos]='\0';
+					checkbuflength(state,buf,pos,line);
+					token.type=check_reserved(buf);
+					if(token.type==idtk){
+						strcpy(token.strval,buf);
+					}
+				}
+				else if(state==state2){
+					ungetc(ch,fp);
+					token.type=numtk;
+					buf[pos]='\0';
+					checkbuflength(state,buf,pos,line);
+					strcpy(token.strval,buf);
+				}
+				else if(state==state3){
+					ungetc(ch,fp);
+					token.type=plustk;
+				}
+				else if(state==state4){
+					ungetc(ch,fp);
+					token.type=multtk;
+				}
+				else if(state==state6){			
+					ungetc(ch,fp);
+					token.type=lowertk;
+				}
+				else if(state==state7){
+					ungetc(ch,fp);
+					token.type=greatertk;			
+				}
+				
+				else if(state==state5){
+					ungetc(ch,fp);
+					printf("Line %d :: Error: Unknown character \":\"\n", line);
+					exit(0);
+				}
+				else if(state==state8){
+					ungetc(ch,fp);
+					token.type=slashtk;
+				}
+				else if(state==state9 || state==state10){
+					ungetc(ch,fp);
+					printf("Line %d :: Error: Expected \"*/\"\n", line);
+					exit(0);
+				}
+				state=T[state][eoftk];
+			break;
+			default:
+				if(state==state1){
+					ungetc(ch,fp);
+					buf[pos]='\0';
+					checkbuflength(state,buf,pos,line);
+					token.type=check_reserved(buf);
+					if(token.type==idtk){
+						strcpy(token.strval,buf);
+					}
+					return;
+				}
+				else if(state==state2){
+					ungetc(ch,fp);
+					token.type=numtk;
+					buf[pos]='\0';
+					checkbuflength(state,buf,pos,line);
+					strcpy(token.strval,buf);
+					return;
+				}
+				else if(state==state3){
+					ungetc(ch,fp);
+					token.type=plustk;
+					return;
+				}
+				else if(state==state4){
+					ungetc(ch,fp);
+					token.type=multtk;
+					return;
+				}
+				else if(state==state6){			
+					ungetc(ch,fp);
+					token.type=lowertk;
+					return;
+				}
+				else if(state==state7){
+					ungetc(ch,fp);
+					token.type=greatertk;
+					return;	
+				}
+
+				else if(state==state0){
+					ungetc(ch,fp);
+					printf("Line %d :: Error: Unknown character \"%c\"\n", line, ch);
+					exit(0);
+					return;
+				}
+				else if(state==state5){
+					ungetc(ch,fp);
+					printf("Line %d :: Error: Unknown character \":\"\n", line);
+					exit(0);
+					return;
+				}
+				else if(state==state8){
+					ungetc(ch,fp);
+					printf("Line %d :: Error: Unknown character \"/\"\n", line);
+					exit(0);
+					return;
+				}
+
+				state=T[state][othertk];
+			break;
+		}
+	}
+	
+	if(state==OK)
+		return;
+	else if(state==error){
+		exit(0);
+	}
+}
+
+/*==========================================================*/
+/* Syntactical analysis													*/
+void syntax(){
+	lex();
+	program();
+}
+
+void program(){
+	char programname[40];
+	quadlist *programlist=NULL;
+
+	if(token.type==programtk){
+		lex();
+		if(token.type==idtk){
+			strcpy(programname,token.strval);
+			lex();
+			genquad("jump","","","");
+			programlist=makelist(NextQuad);
+			block(programname,programlist);
+		}
+		else{							// no ID
+			printf("Line %d :: Error: Expected ID after program\n", line);
+			exit(0);
+		}		
+	}
+	else{								// no program
+		printf("Line %d :: Error: A toy file must begin with \"program\"\n", line);
+		exit(0);
+	}
+}
+
+void block(char *blockname, quadlist *programlist){
+	entity *found_entity=NULL;
+
+	if(token.type==leftcurlybrackettk){
+		ascope=add_new_scope(ascope,blockname);
+		ascope=add_help_par_list_to_scope(ascope,hlp_par_list);
+		hlp_par_list=NULL;
+		lex();
+		declarations();
+		subprograms();
+		genquad("begin_block",blockname,"","");
+		nextquad();
+		found_entity=searchentity(ascope,blockname);
+		found_entity=assign_starting_quad(found_entity,NextQuad);
+		sprintf(NextQuad, "%d", atoi(NextQuad)-1);
+		if(programlist!=NULL){
+			nextquad();
+			backpatch(programlist,NextQuad);
+			sprintf(NextQuad, "%d", atoi(NextQuad)-1);
+		}
+		sequence();
+		if(token.type==rightcurlybrackettk){
+			if(programlist!=NULL){
+				genquad("halt","","","");
+			}
+			found_entity=assign_framelength(ascope,found_entity);
+			print_symbol_table(ascope);
+			ascope=delete_last_scope(ascope);
+			genquad("end_block",blockname,"","");			
+			lex();
+		}
+		else{							// no '}'
+			printf("Line %d :: Error: Expected '}' at the end of the block\n", line);
+			exit(0);
+		}
+	}
+	else{								// no '{'
+		printf("Line %d :: Error: Expected '{' at the beginning of the block\n", line);
+		exit(0);
+	}
+}
+
+void declarations(){
+	if(token.type==declareinttk){
+		lex();
+		varlist();
+		if(token.type==semicolontk){
+			ascope=add_help_var_list_to_scope(ascope,hlp_var_list);
+			hlp_var_list=NULL;
+			lex();
+		}
+		else{							// no ';'
+			printf("Line %d :: Error: Expected ';' at the end of variables declarations\n", line);
+			exit(0);
+		}
+	}
+}
+
+void varlist(){
+	if(token.type==idtk){
+		hlp_var_list=add_var_to_list(hlp_var_list,token.strval);
+		lex();
+		while(token.type==commatk){
+			lex();
+			if(token.type==idtk){
+				hlp_var_list=add_var_to_list(hlp_var_list,token.strval);
+				lex();
+			}
+			else{						// no id after ','
+				printf("Line %d :: Error: Expected ID after ',' at the variables declarations\n", line);
+				exit(0);
+			}
+		}
+	}
+}
+
+void subprograms(){
+	while(token.type==voidtk || token.type==inttk){
+		procorfunc();
+	}
+}
+
+void procorfunc(){
+	char procorfuncname[40];
+
+	if(token.type==voidtk){
+		lex();
+		if(token.type==idtk){
+			ascope=add_new_entity(ascope,token.strval,enumprocedure);
+			strcpy(procorfuncname,token.strval);
+			lex();
+			funcbody(procorfuncname);
+		}
+		else{							// no id after "void"
+			printf("Line %d :: Error: Expected ID after process declaration\n", line);
+			exit(0);
+		}
+	}
+	else if(token.type==inttk){
+		lex();
+		if(token.type==idtk){
+			ascope=add_new_entity(ascope,token.strval,enumfunction);
+			strcpy(procorfuncname,token.strval);
+			lex();
+			funcbody(procorfuncname);
+		}
+		else{							// no id after "int"
+			printf("Line %d :: Error: Expected ID after function declaration\n", line);
+			exit(0);
+		}
+	}
+	else{								// no "void" or "int"
+		printf("Line %d :: Error: Expected process or function declaration\n", line);
+		exit(0);
+	}
+}
+
+void funcbody(char *procorfuncname){
+	formalpars();
+	ascope=add_help_arg_list_to_scope(ascope,hlp_arg_list);
+	hlp_arg_list=NULL;
+	block(procorfuncname,NULL);
+}
+
+void formalpars(){
+	if(token.type==leftbrackettk){
+		lex();
+		if(token.type==intk || token.type==inouttk){
+			formalparlist();
+		}
+		if(token.type==rightbrackettk){
+			lex();
+		}
+		else{							// no ')'
+			printf("Line %d :: Error: Expected ')' at the end of the parameter list\n", line);
+			exit(0);
+		}
+	}
+	else{								// no '('
+		printf("Line %d :: Error: Expected '(' at the beginning of the parameter list\n", line);
+		exit(0);
+	}
+}
+
+void formalparlist(){
+	formalparitem();
+	while(token.type==commatk){
+		lex();
+		if(token.type==intk || token.type==inouttk)
+			formalparitem();
+		else{							// no "in" or "inout"
+			printf("Line %d :: Error: Unexpected ',' in the parameter list\n", line);
+			exit(0);
+		}
+	}
+}
+
+void formalparitem(){
+	if(token.type==intk){
+		lex();
+		if(token.type==idtk){
+			hlp_par_list=add_par_to_list(hlp_par_list,token.strval,enumCV);
+			hlp_arg_list=add_par_to_list(hlp_arg_list,token.strval,enumCV);
+			lex();
+		}
+		else{							// no "id"
+			printf("Line %d :: Error: Expected parameter in the parameter list\n", line);
+			exit(0);
+		}
+	}
+	else if(token.type==inouttk){
+		lex();
+		if(token.type==idtk){
+			hlp_par_list=add_par_to_list(hlp_par_list,token.strval,enumREF);
+			hlp_arg_list=add_par_to_list(hlp_arg_list,token.strval,enumREF);
+			lex();
+		}
+		else{							// no "id"
+			printf("Line %d :: Error: Expected parameter in the parameter list\n", line);
+			exit(0);
+		}
+	}
+	else{								// no "in" or "inout"
+		printf("Line %d :: Error: Unexpected \"in\" or \"inout\" in the parameter list\n", line);
+		exit(0);
+	}
+}
+
+void sequence(){
+	statement();
+	while(token.type==semicolontk){
+		lex();
+		statement();
+	}
+}
+
+void brackets_seq(){
+	if(token.type==leftcurlybrackettk){
+		lex();
+		sequence();
+		if(token.type==rightcurlybrackettk){
+			lex();
+		}
+		else{							// no '}'
+			printf("Line %d :: Error: Expected '}' at the end of the sequence\n", line);
+			exit(0);
+		}
+	}
+	else{								// no '{'
+		printf("Line %d :: Error: Expected '{' at the beginning of the sequence\n", line);
+		exit(0);
+	}
+}
+
+void brack_or_stat(){
+	if(token.type==leftcurlybrackettk){
+		brackets_seq();
+	}
+	else{
+		statement();
+	}
+}
+
+void statement(){
+	if(token.type==idtk){
+		assignment_stat();
+	}
+	else if(token.type==iftk){
+		if_stat();
+	}
+	else if(token.type==whiletk){
+		while_stat();
+	}
+	else if(token.type==fortk){
+		for_stat();
+	}
+	else if(token.type==inputtk){
+		input_stat();
+	}
+	else if(token.type==printtk){
+		print_stat();
+	}
+	else if(token.type==calltk){
+		call_stat();
+	}
+	else if(token.type==returntk){
+		return_stat();
+	}
+}
+
+void assignment_stat(){
+	char Eplace[40];
+	char idplace[40];
+	
+	if(token.type==idtk){
+		strcpy(idplace,token.strval);		
+		lex();
+		if(token.type==assigntk){
+			lex();
+			expression(Eplace);
+			genquad(":=",Eplace,"",idplace);
+		}
+		else{								// no ':='
+			printf("Line %d :: Error: Expected ':=' at the assignment of ID\n", line);
+			exit(0);
+		}
+	}
+	else{									// no ID
+		printf("Line %d :: Error: Expected ID at the assignment statement\n", line);
+		exit(0);
+	}
+}
+
+void if_stat(){
+	quadlist *condtrue=NULL, *condfalse=NULL;
+	quadlist *iflist=NULL;	
+	tflist condlist;
+
+	if(token.type==iftk){
+		lex();
+		if(token.type==leftbrackettk){
+			lex();
+			condlist.truelist=condtrue;
+			condlist.falselist=condfalse;
+			condition(&condlist);
+			condtrue=condlist.truelist;
+			condfalse=condlist.falselist;
+			if(token.type==rightbrackettk){
+				nextquad();
+				backpatch(condtrue,NextQuad);
+				sprintf(NextQuad, "%d", atoi(NextQuad)-1); 
+				lex();
+				brack_or_stat();
+				genquad("jump","","","");
+				iflist=makelist(NextQuad);
+				nextquad();
+				backpatch(condfalse,NextQuad);
+				sprintf(NextQuad, "%d", atoi(NextQuad)-1); 
+				elsepart();
+				nextquad();
+				backpatch(iflist,NextQuad);
+				sprintf(NextQuad, "%d", atoi(NextQuad)-1); 
+			}
+			else{							// no ')'
+				printf("Line %d :: Error: Expected ')' at the end of the condition in if statement\n", line);
+				exit(0);
+			}
+		}
+		else{								// no '('
+			printf("Line %d :: Error: Expected '(' at the beginning of the condition in if statement\n", line);
+			exit(0);
+		}
+	}
+	else{									// no "if"
+		printf("Line %d :: Error: If statement must begin with \"if\"\n", line);
+		exit(0);
+	}
+}
+
+void elsepart(){
+	if(token.type==elsetk){
+		lex();
+		brack_or_stat();
+	}
+}
+
+void while_stat(){
+	quadlist *condtrue=NULL, *condfalse=NULL;
+	char condquad[7];
+	tflist condlist;
+
+	if(token.type==whiletk){
+		lex();
+		nextquad();
+		strcpy(condquad,NextQuad);
+		sprintf(NextQuad, "%d", atoi(NextQuad)-1); 
+		if(token.type==leftbrackettk){
+			lex();
+			condlist.truelist=condtrue;
+			condlist.falselist=condfalse;
+			condition(&condlist);
+			condtrue=condlist.truelist;
+			condfalse=condlist.falselist;
+			if(token.type==rightbrackettk){
+				lex();
+				nextquad();
+				backpatch(condtrue,NextQuad);
+				sprintf(NextQuad, "%d", atoi(NextQuad)-1); 
+				brack_or_stat();
+				genquad("jump","","",condquad);
+				nextquad();
+				backpatch(condfalse,NextQuad);
+				sprintf(NextQuad, "%d", atoi(NextQuad)-1); 
+			}
+			else{							// no ')'
+				printf("Line %d :: Error: Expected ')' at the end of the condition in while statement\n", line);
+				exit(0);
+			}
+		}
+		else{								// no '('
+			printf("Line %d :: Error: Expected '(' at the beginning of the condition in while statement\n", line);
+			exit(0);
+		}	
+	}
+	else{									// no "while"
+		printf("Line %d :: Error: While statement must begin with \"while\"\n", line);
+		exit(0);
+	}
+}
+
+void for_stat(){
+	char condquad[7], assignquad[7];
+	quadlist *condtrue=NULL, *condfalse=NULL;
+	tflist condlist;
+	char Eplace[40];
+	char idplace[40];
+	char Tplace[40]="\0";
+
+	if(token.type==fortk){
+		lex();
+		if(token.type==leftbrackettk){
+			lex();
+			if(token.type==idtk){
+				strcpy(idplace,token.strval);		
+				lex();
+				if(token.type==assigntk){
+					lex();
+					expression(Eplace);
+					genquad(":=",Eplace,"",idplace);
+					if(token.type==semicolontk){
+						nextquad();						
+						strcpy(condquad,NextQuad);
+						sprintf(NextQuad, "%d", atoi(NextQuad)-1); 
+						lex();
+						condlist.truelist=condtrue;
+						condlist.falselist=condfalse;
+						condition(&condlist);
+						condtrue=condlist.truelist;
+						condfalse=condlist.falselist;
+						if(token.type==semicolontk){
+							nextquad();						
+							strcpy(assignquad,NextQuad);
+							sprintf(NextQuad, "%d", atoi(NextQuad)-1); 							
+							lex();
+							if(token.type==idtk){
+								strcpy(idplace,token.strval);
+								lex();
+								if(token.type==increasetk){
+									lex();
+									optional_sign(Tplace);
+									if(token.type==numtk){
+										strcat(Tplace,token.strval);
+										genquad("+",idplace,Tplace,idplace);
+										lex();
+										if(token.type==rightbrackettk){
+											genquad("jump","","",condquad);
+											nextquad();
+											backpatch(condtrue,NextQuad);
+											sprintf(NextQuad, "%d", atoi(NextQuad)-1); 					
+											lex();
+											brack_or_stat();
+											genquad("jump","","",assignquad);
+											nextquad();
+											backpatch(condfalse,NextQuad);
+											sprintf(NextQuad, "%d", atoi(NextQuad)-1); 
+										}
+										else{		// no ')'
+											printf("Line %d :: Error: Expected ')' at the end of for statement\n", line);
+											exit(0);
+										}	
+									}
+									else{			// no CONSTANT
+										printf("Line %d :: Error: Expected constant in the step at the incremental expression of for statement\n", line);
+										exit(0);
+									}
+								}
+								else{				// no '+='
+									printf("Line %d :: Error: Expected '+=' at the incremental expression of for statement\n", line);
+									exit(0);
+								}
+							}
+							else{					// no ID at the increment expression
+								printf("Line %d :: Error: Expected ID at the incremental expression of for statement\n", line);
+								exit(0);
+							}
+						}
+						else{						// no second ';'
+							printf("Line %d :: Error: Expected ';' at the end of loop condition of for statement\n", line);
+							exit(0);
+						}
+					}
+					else{							// no first ';'
+						printf("Line %d :: Error: Expected ';' at the end of initialize expression of for statement\n", line);
+						exit(0);
+					}
+				}
+				else{								// no ':=' at the initialize expression
+					printf("Line %d :: Error: Expected ':=' at the initialize expression of for statement\n", line);
+					exit(0);
+				}
+			}
+			else{									// no ID at the initialize expression
+				printf("Line %d :: Error: Expected ID at the initialize expression of for statement\n", line);
+				exit(0);
+			}
+		}
+		else{										// no '('
+			printf("Line %d :: Error: Expected '(' at the beginning of for statement\n", line);
+			exit(0);
+		}
+	}
+	else{											// no "for"
+		printf("Line %d :: Error: For statement must begin with \"for\"\n", line);
+		exit(0);
+	}
+}
+
+void input_stat(){
+	char idplace[40];
+
+	if(token.type==inputtk){
+		lex();
+		if(token.type==leftbrackettk){
+			lex();
+			if(token.type==idtk){
+				strcpy(idplace,token.strval);
+				lex();
+				if(token.type==rightbrackettk){
+					genquad("input","","",idplace);
+					lex();
+				}
+				else{								// no ')'
+					printf("Line %d :: Error: Expected ')' at the end of input statement\n", line);
+					exit(0);
+				}
+			}
+			else{									// no ID
+				printf("Line %d :: Error: Expected ID at the input statement\n", line);
+				exit(0);
+			}
+		}
+		else{										// no '('
+			printf("Line %d :: Error: Expected '(' at the beginning of input statement\n", line);
+			exit(0);
+		}	
+	}
+	else{											// no "input"
+		printf("Line %d :: Error: Input statement must begin with \"input\"\n", line);
+		exit(0);
+	}
+}
+
+void print_stat(){
+	char Eplace[40];
+
+	if(token.type==printtk){
+		lex();
+		if(token.type==leftbrackettk){
+			lex();
+			expression(Eplace);
+			if(token.type==rightbrackettk){
+				genquad("print","","",Eplace);
+				lex();
+			}
+			else{									// no ')'
+				printf("Line %d :: Error: Expected ')' at the end of print statement\n", line);
+				exit(0);
+			}
+		}
+		else{										// no '('
+			printf("Line %d :: Error: Expected '(' at the beginning of print statement\n", line);
+			exit(0);
+		}	
+	}
+	else{											// no "print"
+		printf("Line %d :: Error: Print statement must begin with \"print\"\n", line);
+		exit(0);
+	}
+}
+
+void call_stat(){
+	char idplace[40], Fplace[40];
+
+	if(token.type==calltk){
+		lex();
+		if(token.type==idtk){
+			strcpy(idplace,token.strval);
+			lex();
+			actualpars(idplace,Fplace);
+			//genquad("call",idplace,"","");
+		}
+		else{										//no ID 
+				printf("Line %d :: Error: Expected ID at the call statement\n", line);
+				exit(0);
+		}
+	}
+	else{											//no "call"
+			printf("Line %d :: Error: Call statement must begin with \"call\"\n", line);
+			exit(0);
+	}
+}
+
+void actualpars(char *idplace, char *Fplace){
+	char w[40];
+	
+	if(token.type==leftbrackettk){
+		lex();
+		if(token.type==intk || token.type==inouttk){
+			actualparlist();
+		}
+		if(token.type==rightbrackettk){
+			lex();
+			newTemp();
+			ascope=add_new_entity(ascope,temp_var,enumtempvar);
+			strcpy(w,temp_var);
+			genquad("par",w,"RET","");
+			genquad("call",idplace,"","");
+			strcpy(Fplace,w);
+		}
+		else{									//no ')'
+			printf("Line %d :: Error: Expected ')' at the end of the parameter list\n", line);		
+			exit(0);
+		}
+	}
+}
+
+void actualparlist(){
+	parlist *anitem=NULL;
+	parlist *temp=NULL;
+
+	anitem=actualparitem(anitem);
+	while(token.type==commatk){
+		lex();
+		if(token.type==intk || token.type==inouttk)
+			anitem=actualparitem(anitem);
+		else{							// no "in" or "inout"
+			printf("Line %d :: Error: Unexpected ',' in the parameter list\n", line);
+			exit(0);
+		}
+	}
+
+	temp=anitem;
+	while(temp!=NULL){
+		genquad("par",temp->name,temp->method,"");
+		temp=temp->next;
+	}
+	
+}
+
+parlist * actualparitem(parlist *anitem){
+	char Eplace[40];
+	parlist *newitem=NULL;
+	parlist *temp=NULL;
+
+	temp=anitem;
+	if(temp!=NULL){
+		while(temp->next!=NULL){	
+			temp=temp->next;
+		}
+	}
+
+	if(token.type==intk){
+		lex();
+		expression(Eplace);
+		newitem=(parlist *)malloc(sizeof(parlist));
+		strcpy(newitem->name,Eplace);
+		strcpy(newitem->method,"CV");
+		newitem->next=NULL;
+		if(anitem==NULL){	
+			return(newitem);
+		}
+		else{	
+			temp->next=newitem;
+			return(anitem);
+		}
+	}
+	else if(token.type==inouttk){
+		lex();
+		if(token.type==idtk){
+			lex();
+			newitem=(parlist *)malloc(sizeof(parlist));
+			strcpy(newitem->name,token.strval);
+			strcpy(newitem->method,"REF");
+			newitem->next=NULL;
+			if(anitem==NULL)
+				return(newitem);
+			else{
+				temp->next=newitem;
+				return(anitem);
+			}
+		}
+		else{							// no "id"
+			printf("Line %d :: Error: Expected ID in the parameter list\n", line);
+			exit(0);
+		}
+	}
+	else{								// no "in" or "inout"
+		printf("Line %d :: Error: Expected \"in\" or \"inout\" in the parameter list\n", line);
+		exit(0);
+	}
+}
+
+void return_stat(){
+	char Eplace[40];
+
+	if(token.type==returntk){
+		lex();
+		if(token.type==leftbrackettk){
+			lex();
+			expression(Eplace);
+			if(token.type==rightbrackettk){
+				genquad("ret","","",Eplace);
+				lex();
+			}
+			else{							// no ')'
+				printf("Line %d :: Error: Expected ')' at the end of return statement\n", line);
+				exit(0);
+			}
+		}
+		else{								// no '('
+			printf("Line %d :: Error: Expected '(' at the beginning of return statement\n", line);
+			exit(0);
+		}
+	}
+	else{									// no "return"
+		printf("Line %d :: Error: Return statement must begin with \"return\"\n", line);
+		exit(0);
+	}
+}
+
+void condition(tflist *Blist){
+	quadlist *Q1true=NULL, *Q1false=NULL;
+	quadlist *Q2true=NULL, *Q2false=NULL;
+	tflist Q1list, Q2list;
+
+	Q1list.truelist=Q1true;
+	Q1list.falselist=Q1false;	
+	boolterm(&Q1list);
+	Q1true=Q1list.truelist;
+	Q1false=Q1list.falselist;
+	
+	Blist->truelist=Q1true;
+	Blist->falselist=Q1false;
+	while(token.type==ortk){
+		nextquad();
+		backpatch(Q1false,NextQuad);
+		sprintf(NextQuad, "%d", atoi(NextQuad)-1); 
+		lex();
+		Q2list.truelist=Q2true;
+		Q2list.falselist=Q2false;
+		boolterm(&Q2list);
+		Q2true=Q2list.truelist;
+		Q2false=Q2list.falselist;
+		Blist->truelist=merge(Blist->truelist,Q2true);
+		Blist->falselist=Q2false;
+	}	
+}
+
+void boolterm(tflist *Qlist){
+	quadlist *R1true=NULL, *R1false=NULL;
+	quadlist *R2true=NULL, *R2false=NULL;
+	tflist R1list, R2list;
+
+	R1list.truelist=R1true;
+	R1list.falselist=R1false;		
+	boolfactor(&R1list);
+	R1true=R1list.truelist;
+	R1false=R1list.falselist;
+	Qlist->truelist=R1true;
+	Qlist->falselist=R1false;
+	while(token.type==andtk){
+		nextquad();
+		backpatch(Qlist->truelist,NextQuad);
+		sprintf(NextQuad, "%d", atoi(NextQuad)-1); 
+		lex();
+		R2list.truelist=R2true;
+		R2list.falselist=R2false;
+		boolfactor(&R2list);
+		R2true=R2list.truelist;
+		R2false=R2list.falselist;
+		Qlist->falselist=merge(Qlist->falselist,R2false);
+		Qlist->truelist=R2true;
+	}	
+}
+
+void boolfactor(tflist *Rlist){
+	char E1place[40], E2place[40]; char relop[5];
+	quadlist *Btrue=NULL, *Bfalse=NULL;
+	tflist Blist;
+
+	if(token.type==nottk){
+		lex();
+		if(token.type==leftsquarebrackettk){
+			lex();
+			Blist.truelist=Btrue;
+			Blist.falselist=Bfalse;
+			condition(&Blist);
+
+			Rlist->truelist=Blist.falselist;
+			Rlist->falselist=Blist.truelist;
+			if(token.type==rightsquarebrackettk){
+				lex();
+			}
+			else{									// no ']'
+				printf("Line %d :: Error: Expected ']' at the end of condition \n", line);
+				exit(0);
+			}
+		}
+		else{									// no '['
+				printf("Line %d :: Error: Expected '[' at the beginning of condition \n", line);
+				exit(0);
+		}
+	}
+	else if(token.type==leftsquarebrackettk){
+		lex();
+		Blist.truelist=Btrue;
+		Blist.falselist=Bfalse;
+		condition(&Blist);		
+
+		Rlist->truelist=Blist.truelist;
+		Rlist->falselist=Blist.falselist;
+		if(token.type==rightsquarebrackettk){
+			lex();
+		}
+		else{									// no ']'
+			printf("Line %d :: Error: Expected ']' at the end of condition \n", line);
+			exit(0);
+		}
+	}
+	else{
+		expression(E1place);
+		relational_oper(relop);
+		expression(E2place);
+		genquad(relop,E1place,E2place,"");
+		Rlist->truelist=makelist(NextQuad);
+		genquad("jump","","","");
+		Rlist->falselist=makelist(NextQuad);
+	}	
+}
+
+void expression(char *Eplace){
+	char w[40], T1place[40], T2place[40];
+	int oper;
+
+	optional_sign(T1place);
+	term(T1place);
+	while(token.type==plustk ||token.type==minustk){
+		if(token.type==plustk)
+			oper=plustk;
+		else if(token.type==minustk)
+			oper=minustk;
+		add_oper();
+		term(T2place);
+		newTemp();
+		ascope=add_new_entity(ascope,temp_var,enumtempvar);
+		strcpy(w,temp_var);
+		if(oper==plustk){
+			genquad("+",T1place,T2place,w);
+		}
+		else if(oper==minustk){
+			genquad("-",T1place,T2place,w);
+		}
+		strcpy(T1place,w);
+	}
+	strcpy(Eplace,T1place);
+}
+
+void term(char *Tplace){
+	char w[40], F1place[40], F2place[40];
+	int oper;
+
+	factor(F1place);
+	while(token.type==multtk ||token.type==slashtk){
+		if(token.type==multtk)
+			oper=multtk;
+		else if(token.type==slashtk)
+			oper=slashtk;
+		mul_oper();
+		factor(F2place);
+		newTemp();
+		ascope=add_new_entity(ascope,temp_var,enumtempvar);
+		strcpy(w,temp_var);
+		if(oper==multtk)
+			genquad("*",F1place,F2place,w);
+		else if(oper==slashtk)
+			genquad("/",F1place,F2place,w);
+		strcpy(F1place,w);
+	}
+	if(strcmp(Tplace,"-")==0){
+		strcat(Tplace,F1place);
+	}
+	else
+		strcpy(Tplace,F1place);
+}
+
+void factor(char *Fplace){
+	char Eplace[40], idplace[40], callplace[40];
+
+	if(token.type==leftbrackettk){
+		lex();
+		expression(Eplace);
+		if(token.type==rightbrackettk){
+			lex();
+			strcpy(Fplace,Eplace);
+		}
+		else{							// no ')'
+			printf("Line %d :: Error: Expected ')' at the end of expression \n", line);
+			exit(0);
+		}
+	}
+	else if(token.type==idtk){
+		strcpy(idplace,token.strval);
+		lex();
+		if(token.type!=leftbrackettk)
+			strcpy(Fplace,idplace);
+		actualpars(idplace,Fplace);
+		//strcpy(Fplace,callplace);
+	}
+	else if(token.type==numtk){
+		strcpy(Fplace,token.strval);
+		lex();
+	}
+	else{ 						// no ID or constant or expression
+		printf("Line %d :: Error: Expected constant or ID or expression\n", line);
+		exit(0);
+	}
+}
+
+void relational_oper(char *relop){
+	if(token.type==equaltk){
+		strcpy(relop,"=");		
+		lex();
+	}
+	else if(token.type==lowertk){
+		strcpy(relop,"<");
+		lex();
+	}
+	else if(token.type==lowerequaltk){
+		strcpy(relop,"<=");
+		lex();
+	}	
+	else if(token.type==nonequaltk){
+		strcpy(relop,"<>");
+		lex();
+	}	
+	else if(token.type==greatertk){
+		strcpy(relop,">");
+		lex();
+	}	
+	else if(token.type==greaterequaltk){
+		strcpy(relop,">=");
+		lex();
+	}	
+	else{								// no '='or '<' or '>' or '<=' or '>=' or '<>' 
+		printf("Line %d :: Error: Expected  \"=\", \"<\", \">\", \" <=\", \">=\" or \"<>\" token\n", line);
+		exit(0);
+	}	
+}
+
+void add_oper(){
+	if(token.type==plustk){
+		lex();
+	}
+	else if(token.type==minustk){
+		lex();
+	}
+	else{						//no '+' or '-'
+		printf("Line %d :: Error: Expected  \"+\" or \"-\" token\n", line);
+		exit(0);
+	}
+}
+
+void mul_oper(){
+	if(token.type==multtk)
+		lex();
+	else if(token.type==slashtk)
+		lex();
+	else{							//no '*' or '/'
+		printf("Line %d :: Error: Expected  \"*\" or \"/\" token\n", line);
+		exit(0);
+	}
+}
+
+void optional_sign(char *Tplace){
+	if(token.type==plustk || token.type==minustk){
+		if(token.type==minustk)
+			strcpy(Tplace,"-");		
+		add_oper();
+	}
+}
+
+/*==========================================================*/
+/* Intermediate code												*/
+void nextquad(){
+	int temp_label;
+
+	temp_label=atoi(NextQuad)+1;
+	sprintf(NextQuad, "%d",temp_label); 
+	//printf("nextlabel =%s \n",NextQuad);
+
+}
+
+void genquad(char *a, char *b, char *c, char *d){
+	char alabel[7];
+	quad * tempquad1;
+	quad * tempquad2;
+	
+	if(aquad==NULL){
+		nextquad();
+		strcpy(alabel,NextQuad);
+		aquad=(quad *)malloc(sizeof (quad));
+		strcpy(aquad->label,alabel);
+		strcpy(aquad->op,a);
+		strcpy(aquad->op1,b);
+		strcpy(aquad->op2,c);
+		strcpy(aquad->op3,d);
+		aquad->next=NULL;
+		lastquad=aquad;
+	}
+	else{
+		nextquad();
+		strcpy(alabel,NextQuad);
+		tempquad1=(quad *)malloc(sizeof (quad));
+		strcpy(tempquad1->label,alabel);
+		strcpy(tempquad1->op,a);
+		strcpy(tempquad1->op1,b);
+		strcpy(tempquad1->op2,c);
+		strcpy(tempquad1->op3,d);
+		tempquad1->next=NULL;
+		tempquad2=aquad;
+		while(tempquad2->next!=NULL)
+			tempquad2=tempquad2->next;
+		tempquad2->next=tempquad1;
+		lastquad=tempquad1;
+	}
+}
+
+void newTemp(){
+
+	temp_cnt++;
+	
+	sprintf(temp_var,"T_%d",temp_cnt);
+	
+}
+
+quadlist * emptylist(){
+	quadlist *quad_pnt;
+
+	quad_pnt->link=NULL;
+	quad_pnt->next=NULL;
+
+	return(quad_pnt);
+}
+
+quadlist * makelist(char *label){
+	quadlist *temp_quadlist=NULL;
+	quad *temp_quad=NULL;
+
+	temp_quad=aquad;
+	if(temp_quad!=NULL){
+		while(strcmp(temp_quad->label,label)!=0){
+			temp_quad=temp_quad->next;
+			if(temp_quad==NULL)
+				break;
+		}
+	}
+	temp_quadlist=(quadlist *)malloc(sizeof(quadlist));
+	temp_quadlist->link=temp_quad;
+	temp_quadlist->next=NULL;
+	
+	return(temp_quadlist);
+}
+
+quadlist * merge(quadlist *list1, quadlist *list2){
+	list1->next=list2;
+	list1->next->next=NULL;
+	list2=NULL;
+	return(list1);
+}
+
+void backpatch(quadlist *list, char *x){
+	quadlist *temp=NULL;
+
+	temp=list;
+	while(temp!=NULL){
+		strcpy(temp->link->op3,x);
+		temp=temp->next;
+	}
+	list=NULL;
+}
+	
+/*==========================================================*/
+/* Symbol Table functions												*/
+
+scope * add_new_scope(scope *rootscope, char *sc_name){
+	scope *hlp_ptr=NULL;
+	scope *ascope;
+
+	Level++;
+	if(rootscope==NULL){
+		ascope=(scope *)malloc(sizeof(scope));
+		strcpy(ascope->scope_name,sc_name);
+		ascope->nestingLevel=Level;
+		//printf("Scope %s at nesting level %d has been added\n", ascope->scope_name, ascope->nestingLevel);
+		return ascope;
+	}
+	else{
+		hlp_ptr=rootscope;
+		while(hlp_ptr->next_scope!=NULL){
+			hlp_ptr=hlp_ptr->next_scope;
+		}
+		ascope=(scope *)malloc(sizeof(scope));
+		strcpy(ascope->scope_name,sc_name);
+		ascope->nestingLevel=Level;
+		//printf("Scope %s at nesting level %d has been added\n", ascope->scope_name, ascope->nestingLevel);
+		hlp_ptr->next_scope=ascope;
+		return(rootscope);	
+	}	
+}
+
+scope * add_new_entity(scope *rootscope, char *name, int entity_type){
+	scope *hlp_sc=NULL;
+	entity *anentity;
+	entity *hlp_ent=NULL;
+	
+	entoff=12;								// entity offset
+	
+	if(rootscope==NULL){
+		//printf("Cannot add entity. No scope exists! \n");
+		return(rootscope);
+	}
+	else{
+		hlp_sc=rootscope;
+		while(hlp_sc->next_scope!=NULL){
+			hlp_sc=hlp_sc->next_scope;
+		}
+		if(hlp_sc->first_ent==NULL){
+			anentity=(entity *)malloc(sizeof(entity));
+			strcpy(anentity->ent_name,name);
+			if(entity_type==enumvar){
+				anentity->ent_type.avar=(variable *)malloc(sizeof(variable));
+				anentity->ent_type.avar=add_new_variable();
+				anentity->ent_type.avar->offset=entoff;
+				anentity->type=enumvar;
+				//rintf("Entity %s %s with %d offset has been added\n", anentity->ent_name, anentity->type, anentity->ent_type.avar->offset);
+			}
+			else if(entity_type==enumprocedure){
+				anentity->ent_type.afunc=(function *)malloc(sizeof(function));
+				anentity->ent_type.afunc=add_new_function(entity_type);
+				strcpy(anentity->ent_type.afunc->starting_quad,"?");
+				anentity->type=enumprocedure;
+				//printf("Entity %s %s has been added\n", anentity->ent_name, anentity->type);
+			}
+			else if(entity_type==enumfunction){
+				anentity->ent_type.afunc=(function *)malloc(sizeof(function));
+				anentity->ent_type.afunc=add_new_function(entity_type);
+				strcpy(anentity->ent_type.afunc->starting_quad,"?");
+				anentity->type=enumfunction;
+				//printf("Entity %s %s has been added\n", anentity->ent_name, anentity->type);
+			}
+			else if(entity_type==enumtempvar){
+				anentity->ent_type.atempvar=(tempvar *)malloc(sizeof(tempvar));
+				anentity->ent_type.atempvar=add_new_tempvar();
+				anentity->ent_type.atempvar->offset=entoff;
+				anentity->type=enumvar;
+			}
+			else if(entity_type==enumCV){
+				anentity->ent_type.apar=(parameter *)malloc(sizeof(parameter));
+				anentity->ent_type.apar=add_new_parameter(enumCV);
+				anentity->ent_type.apar->offset=entoff;
+				anentity->type=enumpar;
+			}
+			else if(entity_type==enumREF){
+				anentity->ent_type.apar=(parameter *)malloc(sizeof(parameter));
+				anentity->ent_type.apar=add_new_parameter(enumREF);
+				anentity->ent_type.apar->offset=entoff;
+				anentity->type=enumpar;
+			}
+			
+			hlp_sc->first_ent=anentity;
+		}
+		else{
+			hlp_ent=hlp_sc->first_ent;
+			if(hlp_ent->type!=enumfunction && hlp_ent->type!=enumprocedure)
+				entoff+=4;
+			while(hlp_ent->next_ent!=NULL){
+				hlp_ent=hlp_ent->next_ent;
+				if(hlp_ent->type!=enumfunction && hlp_ent->type!=enumprocedure)
+					entoff+=4;
+			}
+			anentity=(entity *)malloc(sizeof(entity));
+			strcpy(anentity->ent_name,name);
+			if(entity_type==enumvar){
+				anentity->ent_type.avar=(variable *)malloc(sizeof(variable));
+				anentity->ent_type.avar=add_new_variable();
+				anentity->ent_type.avar->offset=entoff;
+				anentity->type=enumvar;
+				//printf("Entity %s %s with %d offset has been added\n", anentity->ent_name, anentity->type, anentity->ent_type.avar->offset);
+			}
+			else if(entity_type==enumprocedure){
+				anentity->ent_type.afunc=(function *)malloc(sizeof(function));
+				anentity->ent_type.afunc=add_new_function(entity_type);
+				anentity->type=enumprocedure;
+				strcpy(anentity->ent_type.afunc->starting_quad,"?");
+				//printf("Entity %s %s has been added\n", anentity->ent_name, anentity->type);
+			}
+			else if(entity_type==enumfunction){
+				anentity->ent_type.afunc=(function *)malloc(sizeof(function));
+				anentity->ent_type.afunc=add_new_function(entity_type);
+				anentity->type=enumfunction;
+				strcpy(anentity->ent_type.afunc->starting_quad,"?");
+				//printf("Entity %s %s has been added\n", anentity->ent_name, anentity->type);
+			}
+			else if(entity_type==enumtempvar){
+				anentity->ent_type.atempvar=(tempvar *)malloc(sizeof(tempvar));
+				anentity->ent_type.atempvar=add_new_tempvar();
+				anentity->ent_type.atempvar->offset=entoff;
+				anentity->type=enumvar;
+			}
+			else if(entity_type==enumCV){
+				anentity->ent_type.apar=(parameter *)malloc(sizeof(parameter));
+				anentity->ent_type.apar=add_new_parameter(enumCV);
+				anentity->ent_type.apar->offset=entoff;
+				anentity->type=enumpar;
+			}
+			else if(entity_type==enumREF){
+				anentity->ent_type.apar=(parameter *)malloc(sizeof(parameter));
+				anentity->ent_type.apar=add_new_parameter(enumREF);
+				anentity->ent_type.apar->offset=entoff;
+				anentity->type=enumpar;
+			}
+
+			hlp_ent->next_ent=anentity;
+		}
+		
+		return(rootscope);
+	}
+}
+
+scope * add_new_argument(scope *rootscope, char *name, int type){
+	scope *hlp_sc=NULL;
+	argument *anarg;
+	entity *hlp_ent=NULL;
+	argument *hlp_arg=NULL;
+
+	if(rootscope==NULL){
+		//printf("Cannot add argument. No scope exists! \n");
+		return(rootscope);
+	}
+	else{
+		hlp_sc=rootscope;
+		while(hlp_sc->next_scope!=NULL){
+			hlp_sc=hlp_sc->next_scope;
+		}
+		if(hlp_sc->first_ent==NULL){
+			//printf("Cannot add argument. No entity exists! \n");
+			return(rootscope);
+		}
+		else{
+			hlp_ent=hlp_sc->first_ent;
+			while(hlp_ent->next_ent!=NULL){
+				hlp_ent=hlp_ent->next_ent;
+			}
+			if(hlp_ent->ent_type.afunc->first_arg==NULL){
+				anarg=(argument *)malloc(sizeof(argument));
+				strcpy(anarg->arg_name,name);
+				anarg->method=type;
+				hlp_ent->ent_type.afunc->first_arg=anarg;
+				//printf("Argument %s %s(%s) with %d offset has been added\n", anarg->arg_type, anarg->arg_name,anarg->parMode, anarg->offset);	//
+				return(rootscope);
+			}
+			else{
+				hlp_arg=hlp_ent->ent_type.afunc->first_arg;
+				while(hlp_arg->next_arg!=NULL){
+					hlp_arg=hlp_arg->next_arg;
+				}
+				anarg=(argument *)malloc(sizeof(argument));
+				strcpy(anarg->arg_name,name);
+				anarg->method=type;
+				hlp_arg->next_arg=anarg;
+				//printf("Argument %s %s(%s) with %d offset has been added\n", anarg->arg_type, anarg->arg_name,anarg->parMode, anarg->offset);	//
+				return(rootscope);
+			}				
+		}
+	}
+}
+
+variable * add_new_variable(){
+	variable *avar;
+
+	avar=(variable *)malloc(sizeof(variable));
+	return(avar);
+}
+
+function * add_new_function(int type){
+	function *afunc;
+
+	afunc=(function *)malloc(sizeof(function));
+	afunc->first_arg=NULL;
+	afunc->type=type;
+	//printf("%s has been added\n", afunc->procORfunc);		//
+
+	return(afunc);
+}
+
+tempvar * add_new_tempvar(){
+	tempvar *atempvar;
+
+	atempvar=(tempvar *)malloc(sizeof(tempvar));
+	return(atempvar);
+}
+
+parameter * add_new_parameter(int type){
+	parameter *apar;
+
+	apar=(parameter *)malloc(sizeof(parameter));
+	apar->method=type;
+	return(apar);
+}
+
+var_list * add_var_to_list(var_list *root, char *name){
+	var_list *hlp_ptr=NULL;
+	var_list *avar;
+
+	if(root==NULL){
+		avar=(var_list *)malloc(sizeof(var_list));
+		strcpy(avar->var_name,name);
+		//printf("var %s has been added to the var_list\n", avar->var_name);				//
+		return(avar);
+	}
+	else{
+		hlp_ptr=root;
+		while(hlp_ptr->next!=NULL){
+			hlp_ptr=hlp_ptr->next;
+		}
+		avar=(var_list *)malloc(sizeof(var_list));
+		strcpy(avar->var_name,name);
+		//printf("var %s has been added to the var_list\n", avar->var_name);				//
+		hlp_ptr->next=avar;
+		return(root);	
+	}	
+}
+
+par_list * add_par_to_list(par_list *root, char *name, int method){
+	par_list *hlp_ptr=NULL;
+	par_list *apar;
+
+	if(root==NULL){
+		apar=(par_list *)malloc(sizeof(par_list));
+		strcpy(apar->par_name,name);
+		apar->par_method=method;
+		//printf("par %s has been added to the par_list\n", apar->par_name);				//
+		return(apar);
+	}
+	else{
+		hlp_ptr=root;
+		while(hlp_ptr->next!=NULL){
+			hlp_ptr=hlp_ptr->next;
+		}
+		apar=(par_list *)malloc(sizeof(par_list));
+		strcpy(apar->par_name,name);
+		apar->par_method=method;
+		//printf("par %s has been added to the par_list\n", apar->par_name);				//
+		hlp_ptr->next=apar;
+		return(root);	
+	}	
+}
+
+scope * add_help_var_list_to_scope(scope *rootscope, var_list *rootvarscope){
+	var_list *hlp_ptr=NULL;
+	scope *hlp_sc=NULL;
+
+	hlp_ptr=rootvarscope;
+	while(hlp_ptr!=NULL){
+		rootscope=add_new_entity(rootscope,hlp_ptr->var_name,enumvar);
+		hlp_ptr=hlp_ptr->next;
+	}
+	return(rootscope);
+}
+
+scope * add_help_par_list_to_scope(scope *rootscope, par_list *rootparscope){
+	par_list *hlp_ptr=NULL;
+	scope *hlp_sc=NULL;
+
+	hlp_ptr=rootparscope;
+	while(hlp_ptr!=NULL){
+		if(hlp_ptr->par_method==enumCV)
+			rootscope=add_new_entity(rootscope,hlp_ptr->par_name,enumCV);
+		else if(hlp_ptr->par_method==enumREF)
+			rootscope=add_new_entity(rootscope,hlp_ptr->par_name,enumREF);
+		hlp_ptr=hlp_ptr->next;
+	}
+	return(rootscope);
+}
+
+scope * add_help_arg_list_to_scope(scope *rootscope, par_list *rootparscope){
+	par_list *hlp_ptr=NULL;
+	scope *hlp_sc=NULL;
+
+	hlp_ptr=rootparscope;
+	while(hlp_ptr!=NULL){
+		if(hlp_ptr->par_method==enumCV)
+			rootscope=add_new_argument(rootscope,hlp_ptr->par_name,enumCV);
+		else if(hlp_ptr->par_method==enumREF)
+			rootscope=add_new_argument(rootscope,hlp_ptr->par_name,enumREF);
+		hlp_ptr=hlp_ptr->next;
+	}
+	return(rootscope);
+}
+
+entity *assign_starting_quad(entity *anentity, char *sq){
+	
+	if(anentity!=NULL && (anentity->type==enumfunction || anentity->type==enumprocedure)){
+		strcpy(anentity->ent_type.afunc->starting_quad,sq);
+	}
+	return(anentity);
+}
+
+entity *assign_framelength(scope *rootscope, entity *anentity){
+	scope *hlp_sc=NULL;
+	entity *hlp_ent;
+	int entoffset=12;
+
+	hlp_sc=rootscope;
+	if(hlp_sc!=NULL){
+		while(hlp_sc->next_scope!=NULL)
+			hlp_sc=hlp_sc->next_scope;
+		hlp_ent=hlp_sc->first_ent;
+		if(hlp_ent!=NULL){
+			if(hlp_ent->type!=enumfunction && hlp_ent->type!=enumprocedure)
+				entoffset+=4;
+			while(hlp_ent->next_ent!=NULL){
+				if(hlp_ent->next_ent->type!=enumfunction && hlp_ent->next_ent->type!=enumprocedure)
+					entoffset+=4;
+				hlp_ent=hlp_ent->next_ent;
+			}
+		}
+	}
+	if(anentity!=NULL && (anentity->type==enumfunction || anentity->type==enumprocedure)){
+		anentity->ent_type.afunc->framelength=entoffset;
+	}
+	return(anentity);
+}
+
+entity *searchentity(scope *rootscope, char *name){
+	scope *hlp_sc=NULL;
+	entity *hlp_ent=NULL;
+	entity *found_entity=NULL;
+
+	if(rootscope==NULL){
+		return(NULL);
+	}
+	else if(rootscope!=NULL){
+		found_entity=searchentity(rootscope->next_scope,name);
+
+		if(found_entity!=NULL)
+			return(found_entity);
+		else{
+			hlp_sc=rootscope;
+			hlp_ent=hlp_sc->first_ent;
+			if(hlp_ent!=NULL){
+				if(strcmp(hlp_ent->ent_name,name)==0)
+					return(hlp_ent);
+				while(hlp_ent->next_ent!=NULL){
+					hlp_ent=hlp_ent->next_ent;
+					if(strcmp(hlp_ent->ent_name,name)==0)
+						return(hlp_ent);
+				}
+				return(NULL);
+			}
+			else{
+				return(NULL);
+			}
+		}
+	}
+}
+
+scope * delete_last_scope(scope *rootscope){
+	scope *hlp_ptr=NULL;
+	scope *prev=NULL;
+
+	if(rootscope==NULL){
+		//printf("There is no scope to delete\n");
+		return rootscope;
+	}
+	else{
+		hlp_ptr=rootscope;
+		prev=rootscope;
+		while(hlp_ptr->next_scope!=NULL){
+			if(hlp_ptr!=prev)
+				prev=prev->next_scope;
+			hlp_ptr=hlp_ptr->next_scope;
+		}
+		Level--;
+		if(hlp_ptr==prev){
+			free(hlp_ptr);
+			return(NULL);
+		}
+		else{
+			free(hlp_ptr);
+			prev->next_scope=NULL;
+			return(rootscope);
+		}	
+	}	
+}
+
+void print_symbol_table(scope *rootscope){
+	entity *hlp_ent=NULL;	
+	argument *hlp_arg=NULL;
+
+	if(rootscope==NULL)
+		return;
+	else if(rootscope!=NULL){
+	//else if(rootscope->next_scope!=NULL){
+		print_symbol_table(rootscope->next_scope);
+	//}
+	//else{
+		printf("<%s>", rootscope->scope_name);
+		
+		if(rootscope->first_ent==NULL){
+			printf(" - \n");			
+			return;
+		}
+		else{
+			hlp_ent=rootscope->first_ent;
+			if(hlp_ent->type==enumvar)
+				printf("-----|%s:%d|", hlp_ent->ent_name, hlp_ent->ent_type.avar->offset);
+			else if(hlp_ent->type==enumtempvar)
+				printf("-----|%s:%d|", hlp_ent->ent_name, hlp_ent->ent_type.atempvar->offset);
+			else if(hlp_ent->type==enumpar){
+				if(hlp_ent->ent_type.apar->method==enumCV)
+					printf("-----|%s:%d IN|", hlp_ent->ent_name, hlp_ent->ent_type.apar->offset);
+				else if(hlp_ent->ent_type.apar->method==enumREF)
+					printf("-----|%s:%d INOUT|", hlp_ent->ent_name, hlp_ent->ent_type.apar->offset);
+			}				
+			else if(hlp_ent->type==enumprocedure)
+				printf("-----|proc:%s sq=%s fl=%d|", hlp_ent->ent_name, hlp_ent->ent_type.afunc->starting_quad, hlp_ent->ent_type.afunc->framelength);
+			else if(hlp_ent->type==enumfunction)		
+				printf("-----|func:%s sq=%s fl=%d|", hlp_ent->ent_name, hlp_ent->ent_type.afunc->starting_quad, hlp_ent->ent_type.afunc->framelength);
+			if(hlp_ent->type==enumfunction || hlp_ent->type==enumprocedure){
+				if(hlp_ent->ent_type.afunc->first_arg!=NULL){
+					hlp_arg=hlp_ent->ent_type.afunc->first_arg;
+					if(hlp_arg->method==enumCV){
+						printf("-/in\\");
+					}
+					else if(hlp_arg->method==enumREF){
+						printf("-/inout\\");
+					}
+					while(hlp_arg->next_arg!=NULL){
+						hlp_arg=hlp_arg->next_arg;
+						if(hlp_arg->method==enumCV){
+							printf("-/in\\");
+						}
+						else if(hlp_arg->method==enumREF){
+							printf("-/inout\\");
+						}
+					}
+				}
+			}
+			while(hlp_ent->next_ent!=NULL){
+				hlp_ent=hlp_ent->next_ent;
+				if(hlp_ent->type==enumvar)
+					printf("-----|%s:%d|", hlp_ent->ent_name, hlp_ent->ent_type.avar->offset);
+				else if(hlp_ent->type==enumtempvar)
+					printf("-----|%s:%d|", hlp_ent->ent_name, hlp_ent->ent_type.atempvar->offset);
+				else if(hlp_ent->type==enumpar){
+					if(hlp_ent->ent_type.apar->method==enumCV)
+						printf("-----|%s:%d IN|", hlp_ent->ent_name, hlp_ent->ent_type.apar->offset);
+					else if(hlp_ent->ent_type.apar->method==enumREF)
+						printf("-----|%s:%d INOUT|", hlp_ent->ent_name, hlp_ent->ent_type.apar->offset);
+				}
+				else if(hlp_ent->type==enumprocedure)
+					printf("-----|proc:%s sq=%s fl=%d|", hlp_ent->ent_name, hlp_ent->ent_type.afunc->starting_quad, hlp_ent->ent_type.afunc->framelength);
+				else if(hlp_ent->type==enumfunction)		
+					printf("-----|func:%s sq=%s fl=%d|", hlp_ent->ent_name, hlp_ent->ent_type.afunc->starting_quad, hlp_ent->ent_type.afunc->framelength);
+				if(hlp_ent->type==enumfunction || hlp_ent->type==enumprocedure){
+					if(hlp_ent->ent_type.afunc->first_arg!=NULL){
+						hlp_arg=hlp_ent->ent_type.afunc->first_arg;
+						if(hlp_arg->method==enumCV){
+							printf("-/in\\");
+						}
+						else if(hlp_arg->method==enumREF){
+							printf("-/inout\\");
+						}
+						while(hlp_arg->next_arg!=NULL){
+							hlp_arg=hlp_arg->next_arg;
+							if(hlp_arg->method==enumCV){
+								printf("-/in\\");
+							}
+							else if(hlp_arg->method==enumREF){
+								printf("-/inout\\");
+							}
+						}
+					}
+				}
+			}
+			printf("\n");
+		}
+		printf(" |\n |\n |\n");
+	}
+	if(rootscope->nestingLevel==1)
+		printf("END OF SYMBOL TABLE\n\n\n");
+}
+
+/*==========================================================*/
+/* Help Function for lectical analysis.							*
+ *	Prints lectical units found by lex.								*
+ *	In order to use it, enable print_enums(token.type); 		*
+ *	in main.																	*/
+
+void print_enums(int type){
+	switch (type){
+		case plustk:
+			printf("\t+\n");
+		break;
+		case minustk:
+			printf("\t-\n");
+		break; 
+		case multtk:
+			printf("\t*\n");
+		break; 
+		case slashtk:
+			printf("\t/\n");
+		break;
+		case equaltk:
+			printf("\t=\n");
+		break; 
+		case lowertk:
+			printf("\t<\n");
+		break; 
+		case greatertk:
+			printf("\t>\n");
+		break; 
+		case semicolontk:
+			printf("\t;\n");
+		break; 
+		case commatk:
+			printf("\t,\n");
+		break; 
+		case leftbrackettk:
+			printf("\t(\n");
+		break; 
+		case rightbrackettk:
+			printf("\t)\n");
+		break; 
+		case leftsquarebrackettk:
+			printf("\t[\n");
+		break; 
+		case rightsquarebrackettk:
+			printf("\t]\n");
+		break; 
+		case leftcurlybrackettk:
+			printf("\t{\n");
+		break; 
+		case rightcurlybrackettk:
+			printf("\t}\n");
+		break;
+		case increasetk:
+			printf("\t+\n");
+		break; 
+		case lowerequaltk:
+			printf("\t+=\n");
+		break;
+		case greaterequaltk:
+			printf("\t>=\n");
+		break; 
+		case nonequaltk:
+			printf("\t<>\n");
+		break; 
+		case assigntk:
+			printf("\t:=\n");
+		break; 
+		case begincommenttk:
+			printf("\t/*\n");
+		break; 
+		case endcommenttk:
+			printf("\t*/\n");
+		break; 
+		case programtk:
+			printf("\tprogram\n");
+		break; 
+		case inttk:
+			printf("\tint\n");
+		break; 
+		case voidtk:
+			printf("\tvoid\n");
+		break; 
+		case intk:
+			printf("\tin\n");
+		break; 
+		case inouttk:
+			printf("\tinout\n");
+		break; 
+		case calltk:
+			printf("\tcall\n");
+		break; 
+		case returntk:
+			printf("\treturn\n");
+		break; 
+		case inputtk:
+			printf("\tinput\n");
+		break; 
+		case printtk:
+			printf("\tprint\n");
+		break; 
+		case iftk:
+			printf("\tif\n");
+		break; 
+		case elsetk:
+			printf("\telse\n");
+		break; 
+		case whiletk:
+			printf("\twhile\n");
+		break; 
+		case fortk:
+			printf("\tfor\n");
+		break; 
+		case nottk:
+			printf("\tnot\n");
+		break; 
+		case andtk:
+			printf("\tand\n");
+		break; 
+		case ortk:
+			printf("\tor\n");
+		break; 
+	}
+}
+
+/* Help Function for the intermediate code.						*
+ *	Prints quad list						.								*
+ *	In order to use it, enable print_quadlist;			 		*
+ *	in main.																	*/
+void print_quadlist(){
+	quad *tempquad;
+
+	tempquad=aquad;
+	if(tempquad==NULL)
+		return;
+	else{
+		while(tempquad!=NULL){
+
+			/* IN ORDER TO HAVE ALIGNMENT IN TERMINAL USE THIS*/
+			printf("%s", tempquad->label);
+			if(lastquad!=NULL){
+				if(strlen(lastquad->label)>4){
+					if(strlen(tempquad->label)<5)
+						printf("\t\t");
+					else
+						printf("\t");
+				}
+				else
+					printf("\t");
+			}
+
+			printf("%s", tempquad->op);
+			if(strlen(tempquad->op)==0)
+				printf("\t\t\t");
+			else if(strlen(tempquad->op)<6)
+				printf("\t\t");
+			else
+				printf("\t");
+
+			printf("%s", tempquad->op1);
+			if(strlen(tempquad->op1)==0)
+				printf("\t\t");
+			else if(strlen(tempquad->op1)<5)
+				printf("\t\t");
+			else
+				printf("\t");
+
+			printf("%s", tempquad->op2);
+			if(strlen(tempquad->op2)==0)
+				printf("\t\t");
+			else if(strlen(tempquad->op2)<5)
+				printf("\t\t");
+			else
+				printf("\t");
+
+			printf("%s\n", tempquad->op3);
+			/*========================================*/
+			/* IF YOU WANT TO PRINT THE QUADLIST		*
+			 *	WITHOUT ALIGNMENT (SINGLE TAB ONLY)		*
+			 *	USE THIS											*/
+			//printf("%s\t%s\t%s\t%s\t%s\n", tempquad->label,tempquad->op,tempquad->op1,tempquad->op2,tempquad->op3);
+			/*========================================*/			
+		
+			tempquad=tempquad->next;
+		}
+	}
+}
+
+/*==========================================================*/
+
+int main(int argc, char* argv[]){
+	/*int i, j;*/
+	char fpname[256];
+	char *label;
+
+	if(argc != 2) {
+		if(argc==1){
+		   printf("toy: No input files\n");
+		}
+		else{
+			printf("toy: Too many arguments\n");
+		}	
+		printf("Usage: executable input.toy\n");			
+		return 0;
+	}
+	else{
+		strcpy(fpname,argv[1]);													//file for lectical analysis
+	}
+
+	if((fp=fopen(fpname,"r"))==NULL){
+		printf("File not exists\nExiting...\n");
+		exit(0);
+	}
+	if(fp!=NULL){
+		create_transition_table();
+
+		syntax();		/* syntax analysis of file */
+		
+			/* IN ORDER TO CHECK ONLY WHAT lex RETURNS EACH TIME RUN THIS */
+			/*while(token.type!=eoftk){
+				lex();
+				if(token.type!=eoftk)				 		 
+					printf("%d",token.type);
+
+				if(token.type==idtk || token.type==numtk)
+					printf("\t%s\n", token.strval);
+				else
+					print_enums(token.type);
+			}*/
+
+			/* IN ORDER TO PRINT quad LIST RUN THIS */
+			print_quadlist();
+
+		printf("\nLecture and Syntax analysis completed succesfully!\n");	
+	}
+	fclose(fp);
+
+	/* IN ORDER TO CHECK THE TRANSITION TABLE RUN THIS */
+	/*for(i=0;i<11;i++){
+		for(j=0;j<20;j++)
+			if(T[i][j]>=0 &&  T[i][j]<10)
+				printf("|  %d ", T[i][j]);
+			else if(T[i][j]>9)
+				printf("| %d ", T[i][j]);
+			else if(T[i][j]==OK)
+				printf("| OK ");
+			else if(T[i][j]==error)
+				printf("| er ");
+		printf("\n");
+	}*/
+
+	exit(1);
+}

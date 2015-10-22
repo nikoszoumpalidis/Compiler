@@ -1,0 +1,35 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+void power(int x, int y,int *p){
+		int i;
+
+		for(i=0;i<y;i++){
+			*p=x*(*p);
+		}	
+}
+int mul_func(int x,int y){
+	int mul=0,i=0;
+	while(i<y){
+		mul=x+mul;
+		i=i+1;
+	}
+	return(mul);
+} 
+main(){
+	int x,y,p=1;
+	int mul=1;
+	printf("dose ti vasi :"); 
+	scanf("%d",&x);
+	printf("dose ton ektheti :");
+	scanf("%d",&y);
+	power(x,y,&p);
+	printf("an ipswsw to %d sto %d,to apotelesma einai : %d \n",x,y,p);
+	if(p>20 && p<256){ 
+		mul=mul_func(p,10);
+	}
+	else{
+		mul=mul_func(p,20);
+	}
+	printf("mul=%d\n",mul);
+}

@@ -1,0 +1,718 @@
+/* *******************************************************************
+
+* Program: Lectical analysis of Language:"Toy"										   
+
+* Author:	Sofia Avgoustidou					1456                               
+				Fedon Bouzbas						1527
+
+* Usage: executable input.toy
+		input.toy=File written in Toy language                                     
+
+*             										                           
+
+* File: lex_2012.c                                                  
+
+******************************************************************** */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+struct nexttoken{		
+	int type;			// type of token read 
+	char strval[82];	// stores only id or num
+};
+
+int T[11][21];				//transition table
+struct nexttoken token;	
+int error_table[1024][2];		// error table
+char error_string_table[1024][20];
+int cur_err=0;
+
+/* functions used in lectical analysis		 									*/
+void create_transition_table();
+void checkbuflength(int, char [], int, int );
+int check_reserved(char []);
+static void lex(FILE *);
+
+/*===================================================================*/
+
+static int line=1;		//global variable - stores line of character in toy file
+
+
+/* possible tokens found in greeklish file and states						*/
+enum tokens_and_states{
+	lettertk,								// A...Z , a...z				0
+	digittk,									// 0...9							1
+	plustk,									//	+								2
+	minustk,									// -								3
+	multtk,									// *								4
+	slashtk,									// / 								5
+	colontk,									// :								6
+	equaltk,									// =								7
+	lowertk,									//	<								8
+	greatertk,								// >								9	
+	semicolontk,							// ;								10
+	commatk,									// ,								11
+	leftbrackettk,							// (								12
+	rightbrackettk,						// )								13
+	leftsquarebrackettk,					// [								14
+	rightsquarebrackettk,				// ]								15
+	leftcurlybrackettk,					// {								16
+	rightcurlybrackettk,					// }								17
+	backslashtk,							// \								18
+	eoftk,									//	eof							19
+	othertk,									// other							20
+
+	increasetk,								//	+=								21
+	lowerequaltk,							// <=								22
+	greaterequaltk,						// >=								23
+	nonequaltk,								// <>								24
+	assigntk,								// :=								25
+	begincommenttk,						// \*								26
+	endcommenttk,							// *\								27
+
+	programtk,								// program     				28
+	inttk,									// int							29
+	voidtk,									// void							30
+	intk,										// in								31
+	inouttk,									// inout							32
+	calltk,									// call							33
+	returntk,								// return						34	
+	inputtk,									// input							35
+	printtk,									// print							36
+	iftk,										// if								37
+	elsetk,									// else							38
+	whiletk,									// while							39
+	fortk,									// for							40
+	nottk,									// not							41	
+	andtk,									// and							42
+	ortk,										// or								43
+
+	numtk,									//									44
+	idtk,										// 								45
+
+
+	state0=0,									// read new symbol
+	state1=1,									// a letter has been read
+	state2=2,									//	a digit has been read
+	state3=3,									// a + has been read
+	state4=4,									//	a * has been read
+	state5=5,									//	a : has been read
+	state6=6,									//	a < has been read
+	state7=7,									// a > has been read
+	state8=8,									// a \ has been read
+	state9=9,									// a \ and a * has been read
+	state10=10,									// in \* state , a * has been read
+
+	OK=-1,
+	error=-2
+};
+
+/*==========================================================*/
+/* Error Handling 														*/
+void add_new_error(int id, int cur_line, char text[]){
+
+	error_table[cur_err][0]=id;
+	error_table[cur_err][1]=cur_line;
+	strcpy(error_string_table[cur_err],text);
+	return;
+}
+
+void print_errors(){
+	int i;
+	for(i=0;i<cur_err;i++){
+		switch(error_table[i][0]){		// switch error id
+			case 1:
+				printf("Line %d :: Warning: \"%s\" is too long (max length = 30 characters)\n", error_table[i][1], error_string_table[i]);
+			break;
+			case 2:
+				printf("Line %d :: Error: \"%s\" is out of limits (number must be between -32767 and 32767)\n", error_table[i][1], error_string_table[i]);
+			break;
+			case 3:
+				printf("Line %d :: Error: Unknown character \":\"\n", error_table[i][1]);
+			break;
+			case 4:
+				printf("Line %d :: Error: Unknown character \"\\\"\n", error_table[i][1]);
+			break;
+			case 5:
+				printf("Line %d :: Error: Unexpected \"*\\\" token\n", error_table[i][1]);
+			break;
+			case 6:
+				printf("Line %d :: Error: Expected \"*\\\"\n", error_table[i][1]);
+			break;
+			case 7:
+				printf("Line %d :: Error: Unknown character \"%s\"\n", error_table[i][1], error_string_table[i]);
+			break;
+		}
+	}
+}
+
+/*==========================================================*/
+/* Lexical analysis 														*/
+void create_transition_table(){
+	int i;
+
+	T[state0][lettertk]=state1;
+	T[state0][digittk]=state2;
+	T[state0][plustk]=state3;
+	for(i=3;i<=5;i++)
+		T[state0][i]=OK;
+	T[state0][colontk]=state5;
+	T[state0][equaltk]=OK;
+	T[state0][lowertk]=state6;
+	T[state0][greatertk]=state7;
+	for(i=10;i<=17;i++)
+		T[state0][i]=OK;
+	T[state0][backslashtk]=state8;
+	T[state0][eoftk]=OK;
+	T[state0][othertk]=error;
+
+	for(i=0;i<=1;i++)
+		T[state1][i]=state1;
+	for(i=2;i<=20;i++)
+		T[state1][i]=OK;
+
+	T[state2][lettertk]=OK;
+	T[state2][digittk]=state2;
+	for(i=2;i<=20;i++)
+		T[state2][i]=OK;
+
+	for(i=0;i<=20;i++)
+		T[state3][i]=OK;
+
+	for(i=0;i<=17;i++)
+		T[state4][i]=OK;
+	T[state4][backslashtk]=error;
+	for(i=19;i<=20;i++)
+		T[state4][i]=OK;
+
+	for(i=0;i<=6;i++)
+		T[state5][i]=error;
+	T[state5][equaltk]=OK;
+	for(i=8;i<=20;i++)
+		T[state5][i]=error;
+	
+	for(i=0;i<=20;i++)
+		T[state6][i]=OK;
+
+	for(i=0;i<=20;i++)
+		T[state7][i]=OK;
+
+	for(i=0;i<=3;i++)
+		T[state8][i]=error;
+	T[state8][multtk]=state9;
+	for(i=5;i<=20;i++)
+		T[state8][i]=error;
+	
+	for(i=0;i<=3;i++)
+		T[state9][i]=state9;
+	T[state9][multtk]=state10;
+	for(i=5;i<=18;i++)
+		T[state9][i]=state9;
+	T[state9][eoftk]=error;
+	T[state9][othertk]=state9;
+	
+	for(i=0;i<=17;i++)
+		T[state10][i]=state9;
+	T[state10][backslashtk]=state0;
+	T[state10][eoftk]=error;
+	T[state10][othertk]=state9;
+	
+}
+
+void checkbuflength(int state, char buf[], int pos, int line){
+	
+	if(state==state1){
+		buf[pos]='\0';
+		if(strlen(buf)>30){
+			add_new_error(1,line,buf);
+			cur_err++;	
+		}
+		else{
+			return;
+		}
+	}
+	else if(state==state2){
+		buf[pos]='\0';
+		if(atoi(buf)<-32767 || atoi(buf)>32767){
+			add_new_error(2,line,buf);
+			cur_err++;	
+		}
+		else{
+			return;
+		}
+	}
+}
+
+int check_reserved(char token[]){
+		
+	if(strcmp(token,"program")==0)
+		return(programtk);
+	else if(strcmp(token,"int")==0)
+		return(inttk);
+	else if(strcmp(token,"void")==0)
+		return(voidtk);
+	else if(strcmp(token,"in")==0)
+		return(intk);
+	else if(strcmp(token,"inout")==0)
+		return(inouttk);
+	else if(strcmp(token,"call")==0)
+		return(calltk);
+	else if(strcmp(token,"return")==0)
+		return(returntk);
+	else if(strcmp(token,"input")==0)
+		return(inputtk);
+	else if(strcmp(token,"print")==0)
+		return(printtk);
+	else if(strcmp(token,"if")==0)
+		return(iftk);
+	else if(strcmp(token,"else")==0)
+		return(elsetk);
+	else if(strcmp(token,"while")==0)
+		return(whiletk);
+	else if(strcmp(token,"for")==0)
+		return(fortk);
+ 	else if(strcmp(token,"not")==0)
+		return(nottk);
+	else if(strcmp(token,"and")==0)
+		return(andtk);
+	else if(strcmp(token,"or")==0)
+		return(ortk);
+	else
+		return(idtk);
+}
+
+static void lex(FILE *fp){
+	char ch;															// character read from file
+	char buf[81];
+	int pos=0;														// current position of buffer
+	int state;														// current state
+
+	state=state0;													// lex always starts from state0
+	while(state>=0){
+		ch=getc(fp);												// get next character in file
+		if(state==0)
+			while(ch==' '){										// ignore spaces
+				ch=getc(fp);
+		}
+		if(state==state0 || state==state9 || state==state10){
+			while(ch=='\n' || ch=='\t'){						// ignore whitespaces only in certain states
+				if(ch=='\n'){
+					line++;											// change line when a break line occurs
+				}
+				ch=getc(fp);
+				while(state==state0 && ch==' '){				// case break line and then whitespace occurs
+					ch=getc(fp);
+				}
+			}
+		}
+
+		switch(ch){
+			case 'A': case 'B': case 'C': case 'D':
+			case 'E': case 'F': case 'G': case 'H':
+			case 'I': case 'J': case 'K': case 'L':
+			case 'M': case 'N': case 'O': case 'P':
+			case 'Q': case 'R': case 'S': case 'T':
+			case 'U': case 'V': case 'W': case 'X':
+			case 'Y': case 'Z': case 'a': case 'b':
+			case 'c': case 'd': case 'e': case 'f':
+			case 'g': case 'h': case 'i': case 'j':
+			case 'k': case 'l': case 'm': case 'n':
+			case 'o': case 'p': case 'q': case 'r':
+			case 's': case 't': case 'u': case 'v':
+			case 'w': case 'x': case 'y': case 'z':
+				if(state==state0 || state==state1){				
+					buf[pos++]=ch;						
+				}
+				else if(state==state2){
+					ungetc(ch,fp);										// unget a character back to file
+					token.type=numtk;
+					buf[pos]='\0';
+					checkbuflength(state,buf,pos,line);
+					strcpy(token.strval,buf);
+				}
+				else if(state==state3){
+					ungetc(ch,fp);
+					token.type=plustk;
+				}
+				else if(state==state4){
+					ungetc(ch,fp);
+					token.type=multtk;
+				}
+				else if(state==state6){
+					ungetc(ch,fp);
+					token.type=lowertk;
+				}
+				else if(state==state7){
+					ungetc(ch,fp);
+					token.type=greatertk;
+				}
+	
+				else if(state==state5){
+					ungetc(ch,fp);
+					add_new_error(3,line,"\0");
+					cur_err++;
+				}
+				else if(state==state8){
+					ungetc(ch,fp);
+					add_new_error(4,line,"\0");
+					cur_err++;
+				}	
+
+				state=T[state][lettertk];
+			break;
+			case '0': case '1': case '2': case '3':
+			case '4': case '5': case '6': case '7':
+			case '8': case '9':
+				if(state==state0 || state==state1 || state==state2){
+					buf[pos++]=ch;
+				}
+				else if(state==state3){
+					ungetc(ch,fp);
+					token.type=plustk;
+				}
+				else if(state==state4){
+					ungetc(ch,fp);
+					token.type=multtk;
+				}
+				else if(state==state6){
+					ungetc(ch,fp);
+					token.type=lowertk;
+				}
+				else if(state==state7){
+					ungetc(ch,fp);
+					token.type=greatertk;
+				}
+
+				else if(state==state5){
+					ungetc(ch,fp);
+					add_new_error(3,line,"\0");
+					cur_err++;
+				}
+				else if(state==state8){
+					ungetc(ch,fp);
+					add_new_error(4,line,"\0");
+					cur_err++;
+				}
+
+				state=T[state][digittk];
+			break;
+			case '+': case '-': case '*': case '/':
+			case '=': case ':': case '<': case '>':
+			case ';': case ',': case '(': case ')':
+			case '[': case ']': case '{': case '}':
+			case '\\':
+				if(state==state0){
+					if(ch=='-')
+						token.type=minustk;
+					else if(ch=='/')
+						token.type=slashtk;
+					else if(ch=='=')
+						token.type=equaltk;
+					else if(ch==';')
+						token.type=semicolontk;
+					else if(ch==',')
+						token.type=commatk;
+					else if(ch=='(')
+						token.type=leftbrackettk;
+					else if(ch==')')
+						token.type=rightbrackettk;
+					else if(ch=='[')
+						token.type=leftsquarebrackettk;
+					else if(ch==']')
+						token.type=rightsquarebrackettk;
+					else if(ch=='{')
+						token.type=leftcurlybrackettk;
+					else if(ch=='}')
+						token.type=rightcurlybrackettk;
+				}
+				else if(state==state1){
+					ungetc(ch,fp);
+					buf[pos]='\0';
+					checkbuflength(state,buf,pos,line);
+					token.type=check_reserved(buf);
+					if(token.type==idtk){
+						strcpy(token.strval,buf);
+					}
+					return;
+				}
+				else if(state==state2){
+					ungetc(ch,fp);
+					token.type=numtk;
+					buf[pos]='\0';
+					checkbuflength(state,buf,pos,line);
+					strcpy(token.strval,buf);
+					return;
+				}
+				else if(state==state3){
+					if(ch=='=')
+						token.type=increasetk;
+					else{
+						ungetc(ch,fp);
+						token.type=plustk;
+						return;
+					}	
+				}
+				else if(state==state4){
+					if(ch!='\\')
+						token.type=multtk;
+					else{
+						add_new_error(5,line,"");
+						return;
+					}	
+				}
+				else if(state==state5){
+					if(ch=='=')
+						token.type=assigntk;
+					else{
+						ungetc(ch,fp);
+						add_new_error(3,line,"");
+						cur_err++;
+						return;
+					}
+				}
+				else if(state==state6){
+					if(ch=='=')
+						token.type=lowerequaltk;
+					else if(ch=='>')
+						token.type=nonequaltk;
+					else{					
+						ungetc(ch,fp);
+						token.type=lowertk;
+						return;
+					}
+				}
+				else if(state==state7){
+					if(ch=='=')
+						token.type=greaterequaltk;
+					else{
+						ungetc(ch,fp);
+						token.type=greatertk;
+						return;
+					}				
+				}
+				else if(state==state8){
+					if(ch!='*'){
+						ungetc(ch,fp);
+						add_new_error(4,line,"");
+						cur_err++;
+					}
+				}						
+				
+				if(ch=='+')
+					state=T[state][plustk];
+				else if(ch=='-')
+					state=T[state][minustk];
+				else if(ch=='*')
+					state=T[state][multtk];
+				else if(ch=='/')
+					state=T[state][slashtk];
+				else if(ch=='=')
+					state=T[state][equaltk];
+				else if(ch==':')
+					state=T[state][colontk];
+				else if(ch=='<')
+					state=T[state][lowertk];
+				else if(ch=='>')
+					state=T[state][greatertk];
+				else if(ch==';')
+					state=T[state][semicolontk];
+				else if(ch==',')
+					state=T[state][commatk];
+				else if(ch=='(')
+					state=T[state][leftbrackettk];
+				else if(ch==')')
+					state=T[state][rightbrackettk];
+				else if(ch=='[')
+					state=T[state][leftsquarebrackettk];
+				else if(ch==']')
+					state=T[state][rightsquarebrackettk];
+				else if(ch=='{')
+					state=T[state][leftcurlybrackettk];
+				else if(ch=='}')
+					state=T[state][rightcurlybrackettk];
+				else if(ch=='\\')
+					state=T[state][backslashtk];
+				else
+					state=state0;
+			break;
+			case EOF:
+				if(state==state0)
+					token.type=eoftk;
+				else if(state==state1){
+					ungetc(ch,fp);
+					buf[pos]='\0';
+					checkbuflength(state,buf,pos,line);
+					token.type=check_reserved(buf);
+					if(token.type==idtk){
+						strcpy(token.strval,buf);
+					}
+				}
+				else if(state==state2){
+					ungetc(ch,fp);
+					token.type=numtk;
+					buf[pos]='\0';
+					checkbuflength(state,buf,pos,line);
+					strcpy(token.strval,buf);
+				}
+				else if(state==state3){
+					ungetc(ch,fp);
+					token.type=plustk;
+				}
+				else if(state==state4){
+					ungetc(ch,fp);
+					token.type=multtk;
+				}
+				else if(state==state6){			
+					ungetc(ch,fp);
+					token.type=lowertk;
+				}
+				else if(state==state7){
+					ungetc(ch,fp);
+					token.type=greatertk;			
+				}
+				
+				else if(state==state5){
+					ungetc(ch,fp);
+					add_new_error(3,line,"\0");
+					cur_err++;
+				}
+				else if(state==state8){
+					ungetc(ch,fp);
+					add_new_error(4,line,"\0");
+					cur_err++;
+				}
+				else if(state==state9 || state==state10){
+					ungetc(ch,fp);
+					add_new_error(6,line,"\0");
+					cur_err++;
+				}
+				state=T[state][eoftk];
+			break;
+			default:
+				if(state==state1){
+					ungetc(ch,fp);
+					buf[pos]='\0';
+					checkbuflength(state,buf,pos,line);
+					token.type=check_reserved(buf);
+					if(token.type==idtk){
+						strcpy(token.strval,buf);
+					}
+					return;
+				}
+				else if(state==state2){
+					ungetc(ch,fp);
+					token.type=numtk;
+					buf[pos]='\0';
+					checkbuflength(state,buf,pos,line);
+					strcpy(token.strval,buf);
+					return;
+				}
+				else if(state==state3){
+					ungetc(ch,fp);
+					token.type=plustk;
+					return;
+				}
+				else if(state==state4){
+					ungetc(ch,fp);
+					token.type=multtk;
+					return;
+				}
+				else if(state==state6){			
+					ungetc(ch,fp);
+					token.type=lowertk;
+					return;
+				}
+				else if(state==state7){
+					ungetc(ch,fp);
+					token.type=greatertk;
+					return;	
+				}
+
+				else if(state==state0){
+					buf[0]=ch;
+					buf[1]='\0';
+					add_new_error(7,line,buf);
+					cur_err++;
+				}
+				else if(state==state5){
+					ungetc(ch,fp);
+					add_new_error(3,line,"\0");
+					cur_err++;
+				}
+				else if(state==state8){
+					ungetc(ch,fp);
+					add_new_error(4,line,"\0");
+					cur_err++;
+				}
+
+				state=T[state][othertk];
+			break;
+		}
+	}
+	
+	if(state==OK)
+		return;
+	else if(state==error){
+		// do nothing
+	}
+}
+
+/*==========================================================*/
+
+int main(int argc, char* argv[]){
+	/*int i, j;*/
+	FILE *fp;
+	char fpname[256];
+
+	if(argc != 2) {
+		if(argc==1){
+		   printf("toy: No input files\n");
+		}
+		else{
+			printf("toy: Too many arguments\n");
+		}	
+		printf("Usage: executable input.toy\n");			
+		return 0;
+	}
+	else{
+		strcpy(fpname,argv[1]);													//file for lectical analysis
+	}
+
+	if((fp=fopen(fpname,"r"))==NULL){
+		printf("File not exists\nExiting...\n");
+		exit(0);
+	}
+	if(fp!=NULL){
+		create_transition_table();
+			//printf("Lecture  completed succesfully!\n");
+			
+
+			/* IN ORDER TO CHECK ONLY WHAT lex RETURNS EACH TIME RUN THIS */
+			/*while(token.type!=eoftk){
+				lex(fp);
+				if(token.type!=eoftk)				 		 
+					printf("%d",token.type);
+
+				if(token.type==idtk || token.type==numtk)
+					printf(" %s\n", token.strval);
+				else
+					printf("\n");
+			}*/	
+	}
+	fclose(fp);
+	
+	print_errors();
+
+	/* IN ORDER TO CHECK THE TRANSITION TABLE RUN THIS */
+	/*for(i=0;i<11;i++){
+		for(j=0;j<21;j++)
+			if(T[i][j]>=0 &&  T[i][j]<10)
+				printf("|  %d ", T[i][j]);
+			else
+				printf("| %d ", T[i][j]);
+		printf("\n");
+	}*/
+	exit(1);
+}

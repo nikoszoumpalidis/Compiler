@@ -1,0 +1,26 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+int mul_func(int x,int y){
+	int mul=0,i=0;
+	while(i<y){
+		mul=x+mul;
+		i=i+1;
+	}
+	return(mul);
+} 
+main(){
+	int x,y,p=1;
+	int mul=1;
+	printf("dose ti vasi :"); 
+	scanf("%d",&x);
+	printf("dose ton ektheti :");
+	scanf("%d",&y);
+	if(p>20 && p<256){ 
+		mul=mul_func(p,10);
+	}
+	else{
+		mul=mul_func(p,20);
+	}
+	printf("mul=%d\n",mul);
+}
